@@ -3,4 +3,4 @@
 import NTCInference
 import NTCAssets
 
-print("NTCDemoRenderer scaffold — NTCInference core=\(NTCInference.coreVersion), NTCAssets core=\(NTCAssets.coreVersion)")
+print("Hello World!")

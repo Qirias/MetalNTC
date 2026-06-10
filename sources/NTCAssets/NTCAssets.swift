@@ -3,5 +3,5 @@
 import NTCCore
 
 public enum NTCAssets {
-    public static let coreVersion = NTCCore.version
+    
 }

@@ -1,5 +1,6 @@
 misc/
 .DS_Store
+.vscode
 .build/
 .swiftpm/
 Package.resolved

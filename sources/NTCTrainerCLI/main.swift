@@ -3,4 +3,4 @@
 import NTCTrainer
 import NTCAssets
 
-print("NTCTrainerCLI scaffold — NTCTrainer core=\(NTCTrainer.coreVersion), NTCAssets core=\(NTCAssets.coreVersion)")
+print("Hello World!")

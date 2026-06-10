@@ -4,5 +4,5 @@
 import NTCCore
 
 public enum NTCTrainer {
-    public static let coreVersion = NTCCore.version
+    
 }
