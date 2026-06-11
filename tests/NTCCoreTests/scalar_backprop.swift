@@ -12,7 +12,7 @@ struct ScalarIO {
     var db: Float = 0
 }
 
-final class Scalarbackpoptests: XCTestCase {
+final class ScalarbackpopTest: XCTestCase {
     func testScalarBackprop() throws {
         let ctx = try MetalContext()
         let pso = try ctx.makeComputePipelineState(function: "scalar_backprop")
@@ -43,7 +43,8 @@ final class Scalarbackpoptests: XCTestCase {
         let encoder = cmd.makeComputeCommandEncoder()!
         encoder.setComputePipelineState(pso)
         encoder.setArgumentTable(argTable)
-        encoder.dispatchThreadgroups(threadgroupsPerGrid: MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        encoder.dispatchThreadgroups(threadgroupsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         encoder.endEncoding()
         cmd.endCommandBuffer()
 
