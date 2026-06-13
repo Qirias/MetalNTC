@@ -1,0 +1,11 @@
+# Production shaders go here.
+#
+# Currently empty: the only Metal kernels in the repo are scalar
+# backprop warmups, which live with their tests under
+# tests/NTCCoreTests/shaders/.
+#
+# When the first production kernel lands (Phase D, train_step.metal),
+# re-add `resources: [.process("shaders")]` to the NTCCore target in
+# Package.swift and place it here. Shared MSL inlines (hard_gelu,
+# bilinear_sample, etc., per the shared_msl_inlines rule in mempalace)
+# go under shaders/Shared/.
