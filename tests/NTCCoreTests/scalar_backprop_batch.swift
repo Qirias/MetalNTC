@@ -11,7 +11,7 @@ struct BatchParams {
 
 final class ScalarBackpropBatchTest: XCTestCase {
      func testScalarBackpropBatchAtomicSum() throws {
-         let ctx = try MetalContext()
+         let ctx = try MetalContext(bundle: .module)
          let pso = try ctx.makeComputePipelineState(function: "scalar_backprop_batch")
 
          let N = 4096

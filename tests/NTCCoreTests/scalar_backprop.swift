@@ -14,7 +14,7 @@ struct ScalarIO {
 
 final class ScalarbackpopTest: XCTestCase {
     func testScalarBackprop() throws {
-        let ctx = try MetalContext()
+        let ctx = try MetalContext(bundle: .module)
         let pso = try ctx.makeComputePipelineState(function: "scalar_backprop")
 
         // init input data
