@@ -96,21 +96,45 @@ final class ScalarLinearRegressionTest: XCTestCase {
         let expectedDW:    [Float] = [-0.4666667, -0.4333333, -0.4,
                                        0.4666667,  0.4333333,  0.4]
 
-        let out = dispatch(W: W, b: b, x: x, y: y)
-        print("nominal: loss=\(out.loss) yPred=\(out.yPred)")
-        print("         db=\(out.db)")
-        print("         dW=\(out.dW)")
+        let nominal = dispatch(W: W, b: b, x: x, y: y)
+        print("nominal: loss=\(nominal.loss) yPred=\(nominal.yPred)")
+        print("         db=\(nominal.db)")
+        print("         dW=\(nominal.dW)")
 
-        XCTAssertEqual(out.loss, expectedLoss, accuracy: 1e-5, "loss mismatch")
+        XCTAssertEqual(nominal.loss, expectedLoss, accuracy: 1e-5, "loss mismatch")
         for j in 0..<Self.kOutDim {
-            XCTAssertEqual(out.yPred[j], expectedYPred[j], accuracy: 1e-5, "yPred[\(j)] mismatch")
-            XCTAssertEqual(out.db[j],    expectedDB[j],    accuracy: 1e-5, "db[\(j)] mismatch")
+            XCTAssertEqual(nominal.yPred[j], expectedYPred[j], accuracy: 1e-5, "yPred[\(j)] mismatch")
+            XCTAssertEqual(nominal.db[j],    expectedDB[j],    accuracy: 1e-5, "db[\(j)] mismatch")
         }
         for i in 0..<Self.kInDim {
             for j in 0..<Self.kOutDim {
                 let idx = i * Self.kOutDim + j
-                XCTAssertEqual(out.dW[idx], expectedDW[idx], accuracy: 1e-5, "dW[\(i),\(j)] mismatch")
+                XCTAssertEqual(nominal.dW[idx], expectedDW[idx], accuracy: 1e-5, "dW[\(i),\(j)] mismatch")
             }
         }
+        
+        func gradientsAgree(estimate: Float, analytic: Float) -> Bool {
+            let denom = max(abs(estimate), abs(analytic), 1e-3)
+            return abs(estimate - analytic) / denom < 1e-3
+        }
+        
+        // nudge only w by +h and -h
+        let h: Float = 1e-3
+        var WPert = W
+        WPert[0] += h
+        let WPlus = dispatch(W: WPert, b: b, x:x, y: y)
+        WPert[0] -= 2.0 * h
+        let WMinus = dispatch(W: WPert, b: b, x: x, y: y)
+        
+        let dW00Estimate = (WPlus.loss - WMinus.loss) / (2 * h)
+        XCTAssert(gradientsAgree(estimate: dW00Estimate, analytic: nominal.dW[0]))
+        
+        var bPert = b
+        bPert[1] += h
+        let bPlus  = dispatch(W: W, b: bPert, x: x, y: y)
+        bPert[1] -= 2 * h
+        let bMinus = dispatch(W: W, b: bPert, x: x, y: y)
+        let db1Estimate = (bPlus.loss - bMinus.loss) / (2 * h)
+        XCTAssert(gradientsAgree(estimate: db1Estimate, analytic: nominal.db[1]))
     }
 }

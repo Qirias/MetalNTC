@@ -63,7 +63,7 @@ final class ScalarBackpropHardGELUTest: XCTestCase {
         let event = ctx.device.makeSharedEvent()!
         var signalValue: UInt64 = 0
 
-        func dispatchKernel(w: Float, b: Float, x: Float, y: Float) -> (loss: Float, dw: Float, db: Float) {
+        func dispatch(w: Float, b: Float, x: Float, y: Float) -> (loss: Float, dw: Float, db: Float) {
             io.pointee.w = w
             io.pointee.b = b
             io.pointee.x = x
@@ -93,7 +93,7 @@ final class ScalarBackpropHardGELUTest: XCTestCase {
 
         // run the shader at the nominal inputs and compare its outputs to
         // the numbers we worked out on paper above
-        let nominal = dispatchKernel(w: Self.wInit, b: Self.bInit,
+        let nominal = dispatch(w: Self.wInit, b: Self.bInit,
                                      x: Self.xInit, y: Self.yInit)
         print("nominal: loss=\(nominal.loss) dw=\(nominal.dw) db=\(nominal.db)")
 
@@ -117,18 +117,18 @@ final class ScalarBackpropHardGELUTest: XCTestCase {
 
         // nudge only w by +h and -h
         let h: Float = 1e-3
-        let lossWPlus  = dispatchKernel(w: Self.wInit + h, b: Self.bInit,
+        let lossWPlus  = dispatch(w: Self.wInit + h, b: Self.bInit,
                                       x: Self.xInit,    y: Self.yInit).loss
-        let lossWMinus = dispatchKernel(w: Self.wInit - h, b: Self.bInit,
+        let lossWMinus = dispatch(w: Self.wInit - h, b: Self.bInit,
                                       x: Self.xInit,    y: Self.yInit).loss
         let dwEstimate = (lossWPlus - lossWMinus) / (2 * h)
         print("FD w: loss(+h)=\(lossWPlus) loss(-h)=\(lossWMinus) estimate=\(dwEstimate) analytic=\(nominal.dw)")
         XCTAssertTrue(gradientsAgree(estimate: dwEstimate, analytic: nominal.dw), "dw mismatch: estimate=\(dwEstimate), analytic=\(nominal.dw)")
 
         // nudge only b by +h and -h.
-        let lossBPlus  = dispatchKernel(w: Self.wInit, b: Self.bInit + h,
+        let lossBPlus  = dispatch(w: Self.wInit, b: Self.bInit + h,
                                         x: Self.xInit, y: Self.yInit).loss
-        let lossBMinus = dispatchKernel(w: Self.wInit, b: Self.bInit - h,
+        let lossBMinus = dispatch(w: Self.wInit, b: Self.bInit - h,
                                         x: Self.xInit, y: Self.yInit).loss
         let dbEstimate = (lossBPlus - lossBMinus) / (2 * h)
         print("FD b: loss(+h)=\(lossBPlus) loss(-h)=\(lossBMinus) estimate=\(dbEstimate) analytic=\(nominal.db)")
