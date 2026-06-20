@@ -8,7 +8,14 @@ public final class MetalContext {
     public let compiler: any MTL4Compiler
     public let library: any MTLLibrary
     
-    public init() throws {
+    /// Create a MetalContext that loads its default.metallib from the
+    /// given bundle.
+    ///
+    /// The bundle must be one whose SwiftPM target declares `resources`
+    /// pointing at a directory of `.metal` files (so Xcode emits a
+    /// `default.metallib` into that bundle). Callers normally pass
+    /// `Bundle.module` from inside the target that owns the shaders.
+    public init(bundle: Bundle) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             fatalError("This device does not support Metal")
         }
@@ -36,7 +43,7 @@ public final class MetalContext {
         }
 
         do {
-            self.library = try device.makeDefaultLibrary(bundle: .module)
+            self.library = try device.makeDefaultLibrary(bundle: bundle)
         } catch {
             fatalError("Failed to create MTLLibrary: \(error)")
         }

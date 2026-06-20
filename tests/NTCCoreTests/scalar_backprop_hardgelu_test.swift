@@ -2,7 +2,6 @@ import XCTest
 import Metal
 @testable import NTCCore
 
-
 // 1. run the shader once with known inputs to catch bugs in the forward expression
 //
 // 2. finite-difference check

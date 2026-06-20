@@ -18,7 +18,8 @@ let package = Package(
         .target(
             name: "NTCCore",
             path: "sources/NTCCore",
-            resources: [.process("shaders")]
+            //     resources: [.process("shaders")]
+            exclude: ["shaders"]
         ),
         .target(
             name: "NTCAssets",
@@ -58,7 +59,8 @@ let package = Package(
         .testTarget(
             name: "NTCCoreTests",
             dependencies: ["NTCCore"],
-            path: "tests/NTCCoreTests"
+            path: "tests/NTCCoreTests",
+            resources: [.process("shaders")]
         ),
     ]
 )
