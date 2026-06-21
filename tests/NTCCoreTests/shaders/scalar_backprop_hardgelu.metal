@@ -24,8 +24,8 @@ struct ScalarIO {
 //   d(loss)/d(pred) = d(loss)/d(out) * d(out)/d(pred)
 //   d(loss)/d(w)    = d(loss)/d(pred) * x
 //   d(loss)/d(b)    = d(loss)/d(pred)
-kernel void scalar_backprop_hardgelu(device ScalarIO& io [[buffer(0)]],
-                                     uint tid [[thread_position_in_grid]]) {
+kernel void scalar_backprop_hardgelu(device ScalarIO&   io  [[buffer(0)]],
+                                            uint        tid [[thread_position_in_grid]]) {
     if (tid != 0) return;
 
     float pred = io.w * io.x + io.b;

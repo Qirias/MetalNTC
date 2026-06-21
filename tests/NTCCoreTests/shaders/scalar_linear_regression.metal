@@ -15,8 +15,8 @@ struct LinRegIO {
     float db[kOutDim];
 };
 
-kernel void scalar_linear_regression(device LinRegIO& io [[buffer(0)]],
-                                     uint tid [[thread_position_in_threadgroup]]) {
+kernel void scalar_linear_regression(device LinRegIO&   io  [[buffer(0)]],
+                                            uint        tid [[thread_position_in_threadgroup]]) {
     if (tid >= kOutDim)
         return;
     

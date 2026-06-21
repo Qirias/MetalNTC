@@ -23,7 +23,7 @@ private enum Offset {
 }
 
 // MLP test for forward/backward pass at one fixed point (sin(0.5), cos(0.5))
-final class SinMLPTests: XCTestCase {
+final class SinMLPTest: XCTestCase {
     func testForwardBackward() throws {
         let ctx = try MetalContext(bundle: .module)
         let pso = try ctx.makeComputePipelineState(function: "sin_mlp_forward_backward")

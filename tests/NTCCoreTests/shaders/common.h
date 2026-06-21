@@ -3,6 +3,8 @@
 #include <metal_stdlib>
 using namespace metal;
 
+constant int SCALE = 1 << 14;
+
 // a cheap piecewise approximation of GELU
 inline float hard_gelu(float x) {
     return 0.5f * x * (1.0f + clamp(x * 0.5f, -1.0f, 1.0f));
@@ -20,4 +22,8 @@ inline float hard_gelu_prime(float x) {
     float c = clamp(x * 0.5f, -1.0f, 1.0f);
     float in_band = (x >= -2.0f && x <= 2.0f) ? 1.0f : 0.0f;
     return 0.5f * (1.0f + c) + 0.5f * x * 0.5f * in_band;
+}
+
+inline void atomic_add_fixed(device atomic_int* slot, float val) {
+    atomic_fetch_add_explicit(slot, int(rint(val * float(SCALE))), memory_order_relaxed);
 }

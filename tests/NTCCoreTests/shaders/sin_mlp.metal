@@ -22,8 +22,8 @@ struct Offset {
     static constant int total = db2  + K_OUT;
 };
 
- kernel void sin_mlp_forward_backward(device float* io  [[ buffer(0) ]],
-                                      uint          tid [[ thread_position_in_threadgroup ]]) {
+ kernel void sin_mlp_forward_backward(device float* io  [[buffer(0)]],
+                                             uint   tid [[thread_position_in_threadgroup]]) {
 
      if (tid != 0) return;
 
