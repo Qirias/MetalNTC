@@ -114,9 +114,8 @@ final class SinMLPTrainTest: XCTestCase {
         let enc = cmd.makeComputeCommandEncoder()!
         enc.setComputePipelineState(trainPso)
         enc.setArgumentTable(trainArgTable)
-        enc.dispatchThreadgroups(
-            threadgroupsPerGrid:   MTLSize(width: 1,      height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: kBatch, height: 1, depth: 1))
+        enc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: 1,      height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: kBatch, height: 1, depth: 1))
         enc.endEncoding()
         cmd.endCommandBuffer()
 
