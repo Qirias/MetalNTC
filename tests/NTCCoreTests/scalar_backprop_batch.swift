@@ -14,7 +14,7 @@ final class ScalarBackpropBatchTest: XCTestCase {
          let ctx = try MetalContext(bundle: .module)
          let pso = try ctx.makeComputePipelineState(function: "scalar_backprop_batch")
 
-         let N = 4096
+         let N = 1024
          let w0: Float = 0.3
          let b0: Float = -0.1
 
@@ -105,7 +105,7 @@ final class ScalarBackpropBatchTest: XCTestCase {
          event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
          // must match SCALE in scalar_backprop_batch.metal
-         let scale: Double = Double(1 << 14)
+         let scale: Double = Double(1 << 18)
          let raw = accumBuffer.contents().bindMemory(to: Int32.self, capacity: 3)
          let dwGPU   = Double(raw[0]) / scale
          let dbGPU   = Double(raw[1]) / scale

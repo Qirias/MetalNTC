@@ -2,10 +2,10 @@ import XCTest
 import Metal
 @testable import NTCCore
 
-private let kIn     = 1
-private let kHidden = 4
-private let kOut    = 2
-private let kBatch   = 64
+private let kIn     = Shapes.kIn
+private let kHidden = Shapes.kHidden
+private let kOut    = Shapes.kOut
+private let kBatch  = Shapes.kBatch
 
 private enum ParamsOffset {
     static let w1 = 0
@@ -133,14 +133,10 @@ final class SinMLPTrainTest: XCTestCase {
         }
 
         // grad assertions BATCH*(grad/BATCH)
-        let scale: Float = Float(1 << 14)
+        let scale: Float = Float(1 << 18)
         func grad(_ idx: Int) -> Float { Float(paramGrads[idx]) / scale }
 
-        // each thread converts its float grad contribution (int(rint(grad * SCALE))
-        // rint rounds to the nearest, so each thread introduces at most 0.5 of error (0.5 / SCALE)
-        // stacking across the batch: K_BATCH * 0.5 / SCALE
-        // 64 * 0.5 / 16384 = 1 / 512 = 1.95e-3
-        let gradTol: Float = 2e-3
+        let gradTol: Float = 2e-4
         XCTAssertEqual(grad(ParamsOffset.dW1 + 2), -0.130191, accuracy: gradTol, "dW1[0,2] mismatch")
         XCTAssertEqual(grad(ParamsOffset.db1 + 1), -0.171896, accuracy: gradTol, "db1[1] mismatch")
         XCTAssertEqual(grad(ParamsOffset.dW2 + 4), -0.105586, accuracy: gradTol, "dW2[2,0] mismatch")
@@ -169,8 +165,8 @@ final class SinMLPTrainTest: XCTestCase {
         ctx.queue.signalEvent(event, value: signalValue)
         event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
-        // params updated by -lr * grad. lr scales the 2e-3 grad quant down to ~1e-4.
-        let paramTol: Float = 2e-4
+        // params updated by -lr * grad. lr scales the 2e-4 grad quant down to ~1e-5.
+        let paramTol: Float = 2e-5
         XCTAssertEqual(paramFloats[ParamsOffset.w1 + 2], w1_02_pre - lr * -0.130191, accuracy: paramTol, "W1[0,2] not nudged")
         XCTAssertEqual(paramFloats[ParamsOffset.b1 + 1], b1_1_pre  - lr * -0.171896, accuracy: paramTol, "b1[1] not nudged")
         XCTAssertEqual(paramFloats[ParamsOffset.w2 + 4], w2_20_pre - lr * -0.105586, accuracy: paramTol, "W2[2,0] not nudged")
@@ -191,7 +187,6 @@ final class SinMLPTrainTest: XCTestCase {
         let paramsBuffer = ctx.device.makeBuffer(length: paramsBufferLength,
                                   options: .storageModeShared)!
         let paramFloats: UnsafeMutablePointer<Float> = paramsBuffer.contents().bindMemory(to: Float.self, capacity: ParamsOffset.total)
-        let paramGrads: UnsafeMutablePointer<Int32> = paramsBuffer.contents().assumingMemoryBound(to: Int32.self)
 
         let samplesBufferLength = kBatch * SampleOffset.stride * MemoryLayout<Float>.stride
         let samplesBuffer = ctx.device.makeBuffer(length: samplesBufferLength, options: .storageModeShared)!

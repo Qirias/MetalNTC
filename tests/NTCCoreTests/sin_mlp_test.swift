@@ -2,9 +2,9 @@ import XCTest
 import Metal
 @testable import NTCCore
 
-private let kIn     = 1
-private let kHidden = 4
-private let kOut    = 2
+private let kIn     = Shapes.kIn
+private let kHidden = Shapes.kHidden
+private let kOut    = Shapes.kOut
 
 private enum Offset {
     static let w1    = 0
@@ -30,9 +30,8 @@ final class SinMLPTest: XCTestCase {
 
         let bufferLength = Offset.total * MemoryLayout<Float>.stride
         let buffer = ctx.device.makeBuffer(length: bufferLength,
-                                 options: .storageModeShared)!
-        let floats = buffer.contents().bindMemory(to: Float.self,
-                                        capacity: Offset.total)
+                                           options: .storageModeShared)!
+        let floats = buffer.contents().bindMemory(to: Float.self, capacity: Offset.total)
 
         let argDesc = MTL4ArgumentTableDescriptor()
         argDesc.maxBufferBindCount = 1
@@ -89,7 +88,7 @@ final class SinMLPTest: XCTestCase {
             enc.setComputePipelineState(pso)
             enc.setArgumentTable(argTable)
             enc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: 1, height: 1, depth: 1),
-                               threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+                                     threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
             enc.endEncoding()
             cmd.endCommandBuffer()
 

@@ -23,7 +23,8 @@ final class ScalarLinearRegressionTest: XCTestCase {
         let pso = try ctx.makeComputePipelineState(function: "scalar_linear_regression")
         
         let bufferLength = Offset.total * MemoryLayout<Float>.stride
-        let buffer = ctx.device.makeBuffer(length: bufferLength, options: .storageModeShared)!
+        let buffer = ctx.device.makeBuffer(length: bufferLength,
+                                           options: .storageModeShared)!
         
         let floats = buffer.contents().bindMemory(to: Float.self, capacity: Offset.total)
         

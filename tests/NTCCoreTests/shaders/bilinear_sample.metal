@@ -1,6 +1,6 @@
-constant uint GRID_H  = 8;
-constant uint GRID_W  = 8;
-constant uint GRID_CH = 3;
+#include <metal_stdlib>
+#include "shapes.h"
+using namespace metal;
 
 kernel void bilinear_sample_forward(
     device const float* grid   [[buffer(0)]],
@@ -32,6 +32,7 @@ kernel void bilinear_sample_forward(
     uint base11 = (uint(iy1) * GRID_W + uint(ix1)) * GRID_CH;
     
     for (uint ch = 0; ch < GRID_CH; ch++) {
-        out[ch] = w00*grid[base00 + ch] + w01*grid[base01 + ch] + w10*grid[base10 + ch] + w11*grid[base11 + ch];
+        out[ch] = w00 * grid[base00 + ch] + w01 * grid[base01 + ch] +
+                  w10 * grid[base10 + ch] + w11 * grid[base11 + ch];
     }
 }

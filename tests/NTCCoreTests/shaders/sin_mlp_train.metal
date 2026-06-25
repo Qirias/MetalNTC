@@ -1,11 +1,7 @@
 #include <metal_stdlib>
 #include "common.h"
+#include "shapes.h"
 using namespace metal;
-
-constant uint K_IN     = 1;
-constant uint K_HIDDEN = 4;
-constant uint K_OUT    = 2;
-constant uint K_BATCH  = 64;
 
 struct ParamsOffset {
     static constant int w1 = 0;

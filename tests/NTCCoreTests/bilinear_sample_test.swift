@@ -2,12 +2,12 @@ import XCTest
 import Metal
 @testable import NTCCore
 
-private let kGridH  = 8
-private let kGridW  = 8
-private let kGridCh = 3
+private let kGridH  = Shapes.gridH
+private let kGridW  = Shapes.gridW
+private let kGridCh = Shapes.gridCh
 
 private enum GridOffset {
-    static let total = kGridH * kGridW * kGridCh   // 192 floats
+    static let total = Shapes.gridTotal   // 192 floats
 }
 
 final class BilinearSampleTest: XCTestCase {
@@ -18,18 +18,21 @@ final class BilinearSampleTest: XCTestCase {
 
         // grid buffer
         let gridBufferLength = GridOffset.total * MemoryLayout<Float>.stride
-        let gridBuffer = ctx.device.makeBuffer(length: gridBufferLength, options: .storageModeShared)!
+        let gridBuffer = ctx.device.makeBuffer(length: gridBufferLength,
+                                               options: .storageModeShared)!
         let gridFloats = gridBuffer.contents().bindMemory(to: Float.self, capacity: GridOffset.total)
         for i in 0..<GridOffset.total { gridFloats[i] = Float(i) } // 0 to 191
 
         // query buffer
-        let queryBuffer = ctx.device.makeBuffer(length: 2 * MemoryLayout<Float>.stride, options: .storageModeShared)!
+        let queryBuffer = ctx.device.makeBuffer(length: 2 * MemoryLayout<Float>.stride,
+                                                options: .storageModeShared)!
         let queryFloats = queryBuffer.contents().bindMemory(to: Float.self, capacity: 2)
         queryFloats[0] = 5.3 // ix
         queryFloats[1] = 2.7 // iy
 
         // out buffer
-        let outBuffer = ctx.device.makeBuffer(length: kGridCh * MemoryLayout<Float>.stride, options: .storageModeShared)!
+        let outBuffer = ctx.device.makeBuffer(length: kGridCh * MemoryLayout<Float>.stride,
+                                              options: .storageModeShared)!
         let outFloats = outBuffer.contents().bindMemory(to: Float.self, capacity: kGridCh)
         for i in 0..<kGridCh { outFloats[i] = 0 }
 

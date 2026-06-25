@@ -8,8 +8,7 @@ struct BatchParams {
     uint  _pad;
 };
 
-
-constant int SCALE = 1 << 14;
+constant int SCALE = 1 << 18;
 
 kernel void scalar_backprop_batch(device atomic_int*    accum  [[buffer(0)]],   // [dw_sum, db_sum, loss_sum]
                                   device const float*   x      [[buffer(1)]],

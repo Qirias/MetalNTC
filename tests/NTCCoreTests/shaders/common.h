@@ -3,7 +3,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-constant int SCALE = 1 << 14;
+constant int SCALE = 1 << 18;
 
 // a cheap piecewise approximation of GELU
 inline float hard_gelu(float x) {
