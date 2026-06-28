@@ -18,8 +18,7 @@ let package = Package(
         .target(
             name: "NTCCore",
             path: "sources/NTCCore",
-            //     resources: [.process("shaders")]
-            exclude: ["shaders"]
+            resources: [.process("shaders")],
         ),
         .target(
             name: "NTCAssets",
@@ -38,7 +37,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "NTCTrainerCLI",
-            dependencies: ["NTCTrainer", "NTCAssets"],
+            dependencies: ["NTCTrainer", "NTCAssets", "NTCCore"],
             path: "sources/NTCTrainerCLI"
         ),
         .executableTarget(
