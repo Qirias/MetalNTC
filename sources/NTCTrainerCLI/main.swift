@@ -18,6 +18,7 @@ let img = try load_image(at: srcURL, channels: GRID_CH)
 
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = try ctx.makeComputePipelineState(function: "grid_fit_train")
+let inferPso = try ctx.makeComputePipelineState(function: "grid_fit_infer")
 let sgdPso   = try ctx.makeComputePipelineState(function: "sgd_step")
 
 // learnable grid and gradient mirror
@@ -31,7 +32,8 @@ let samplesFloats = samplesBuffer.contents().bindMemory(to: Float.self, capacity
 
 let sourceBuffer = ctx.device.makeBuffer(length: img.pixels.count * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
-
+let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * GRID_CH * MemoryLayout<Float>.stride,
+                                         options: .storageModeShared)!
 img.pixels.withUnsafeBufferPointer { buf in
     sourceBuffer.contents().copyMemory(from: buf.baseAddress!, byteCount: buf.count * MemoryLayout<Float>.stride)
 }
@@ -56,6 +58,7 @@ residencySet.addAllocation(samplesBuffer)
 residencySet.addAllocation(sourceBuffer)
 residencySet.addAllocation(lrBuffer)
 residencySet.addAllocation(nFloatsBuffer)
+residencySet.addAllocation(outputBuffer)
 residencySet.commit()
 ctx.queue.addResidencySet(residencySet)
 
@@ -72,6 +75,12 @@ let sgdArgTable = try ctx.device.makeArgumentTable(descriptor: sgdArgDesc)
 sgdArgTable.setAddress(paramsBuffer.gpuAddress,   index: 0)
 sgdArgTable.setAddress(lrBuffer.gpuAddress,       index: 1)
 sgdArgTable.setAddress(nFloatsBuffer.gpuAddress,  index: 2)
+
+let inferArgDesc = MTL4ArgumentTableDescriptor()
+inferArgDesc.maxBufferBindCount = 2
+let inferArgTable = try ctx.device.makeArgumentTable(descriptor: inferArgDesc)
+inferArgTable.setAddress(paramsBuffer.gpuAddress, index: 0)
+inferArgTable.setAddress(outputBuffer.gpuAddress, index: 1)
 
 for i in 0..<GRID_TOTAL { paramsFloats[i] = Float.random(in: -0.05...0.05) }
 for i in GRID_TOTAL..<(GRID_TOTAL * 2) { paramsFloats[i] = 0 }
@@ -124,4 +133,31 @@ for step in 0..<nSteps {
 }
 
 event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
-print("done. final params at paramsBuffer[0..<\(GRID_TOTAL)].")
+
+let inferCmd = ctx.device.makeCommandBuffer()!
+inferCmd.beginCommandBuffer(allocator: ctx.allocator)
+
+let inferEnc = inferCmd.makeComputeCommandEncoder()!
+inferEnc.setComputePipelineState(inferPso)
+inferEnc.setArgumentTable(inferArgTable)
+let tgx = SRC_W / 16
+let tgy = SRC_H / 16
+inferEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: tgx, height: tgy, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: 16,  height: 16, depth: 1))
+inferEnc.endEncoding()
+
+inferCmd.endCommandBuffer()
+ctx.queue.commit([inferCmd])
+signalValue += 1
+ctx.queue.signalEvent(event, value: signalValue)
+event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
+
+let pixelCount = SRC_H * SRC_W * GRID_CH
+let outPtr = outputBuffer.contents().bindMemory(to: Float.self, capacity: pixelCount)
+let outPixels = Array(UnsafeBufferPointer(start: outPtr, count: pixelCount))
+let outImg = LoadedImage(pixels: outPixels, height: SRC_H, width: SRC_W, channels: GRID_CH)
+
+let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
+let outURL = outDir.appendingPathComponent("grid_fit_color.png")
+try save_image(outImg, to: outURL)
+print("saved infer output to \(outURL.path)")
