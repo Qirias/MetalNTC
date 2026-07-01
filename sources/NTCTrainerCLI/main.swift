@@ -19,7 +19,7 @@ let img = try load_image(at: srcURL, channels: GRID_CH)
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = try ctx.makeComputePipelineState(function: "grid_fit_train")
 let inferPso = try ctx.makeComputePipelineState(function: "grid_fit_infer")
-let sgdPso   = try ctx.makeComputePipelineState(function: "sgd_step")
+let adamPso   = try ctx.makeComputePipelineState(function: "adam_step")
 
 // learnable grid and gradient mirror
 let paramsBuffer = ctx.device.makeBuffer(length: GRID_TOTAL * 2 * MemoryLayout<Float>.stride,
@@ -38,10 +38,22 @@ img.pixels.withUnsafeBufferPointer { buf in
     sourceBuffer.contents().copyMemory(from: buf.baseAddress!, byteCount: buf.count * MemoryLayout<Float>.stride)
 }
 
-let lrBuffer = ctx.device.makeBuffer(length: MemoryLayout<Float>.stride,
-                                     options: .storageModeShared)!
-let lrPtr = lrBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-lrPtr.pointee = 0.05
+let mBuffer = ctx.device.makeBuffer(length: GRID_TOTAL * MemoryLayout<Float>.stride,
+                                    options: .storageModeShared)!
+let vBuffer = ctx.device.makeBuffer(length: GRID_TOTAL * MemoryLayout<Float>.stride,
+                                    options: .storageModeShared)!
+memset(mBuffer.contents(), 0, GRID_TOTAL * MemoryLayout<Float>.stride)
+memset(vBuffer.contents(), 0, GRID_TOTAL * MemoryLayout<Float>.stride)
+
+struct AdamConstants {
+    var lr: Float;
+    var bc1: Float;
+    var bc2: Float
+}
+
+let adamConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<AdamConstants>.stride,
+                                             options: .storageModeShared)!
+let adamConstsPtr = adamConstsBuffer.contents().bindMemory(to: AdamConstants.self, capacity: 1)
 
 let nFloatsBuffer = ctx.device.makeBuffer(length: MemoryLayout<UInt32>.stride,
                                           options: .storageModeShared)!
@@ -51,14 +63,16 @@ nFloatsPtr.pointee = UInt32(GRID_TOTAL)
 
 let setDesc = MTLResidencySetDescriptor()
 setDesc.label = "grid_fit_train.residency"
-setDesc.initialCapacity = 5
+setDesc.initialCapacity = 7
 let residencySet = try ctx.device.makeResidencySet(descriptor: setDesc)
 residencySet.addAllocation(paramsBuffer)
 residencySet.addAllocation(samplesBuffer)
 residencySet.addAllocation(sourceBuffer)
-residencySet.addAllocation(lrBuffer)
 residencySet.addAllocation(nFloatsBuffer)
 residencySet.addAllocation(outputBuffer)
+residencySet.addAllocation(mBuffer)
+residencySet.addAllocation(vBuffer)
+residencySet.addAllocation(adamConstsBuffer)
 residencySet.commit()
 ctx.queue.addResidencySet(residencySet)
 
@@ -69,12 +83,14 @@ trainArgTable.setAddress(paramsBuffer.gpuAddress,  index: 0)
 trainArgTable.setAddress(samplesBuffer.gpuAddress, index: 1)
 trainArgTable.setAddress(sourceBuffer.gpuAddress,  index: 2)
 
-let sgdArgDesc = MTL4ArgumentTableDescriptor()
-sgdArgDesc.maxBufferBindCount = 3
-let sgdArgTable = try ctx.device.makeArgumentTable(descriptor: sgdArgDesc)
-sgdArgTable.setAddress(paramsBuffer.gpuAddress,   index: 0)
-sgdArgTable.setAddress(lrBuffer.gpuAddress,       index: 1)
-sgdArgTable.setAddress(nFloatsBuffer.gpuAddress,  index: 2)
+let adamArgDesc = MTL4ArgumentTableDescriptor()
+adamArgDesc.maxBufferBindCount = 5
+let adamArgTable = try ctx.device.makeArgumentTable(descriptor: adamArgDesc)
+adamArgTable.setAddress(paramsBuffer.gpuAddress,      index: 0)
+adamArgTable.setAddress(mBuffer.gpuAddress,           index: 1)
+adamArgTable.setAddress(vBuffer.gpuAddress,           index: 2)
+adamArgTable.setAddress(adamConstsBuffer.gpuAddress,  index: 3)
+adamArgTable.setAddress(nFloatsBuffer.gpuAddress,     index: 4)
 
 let inferArgDesc = MTL4ArgumentTableDescriptor()
 inferArgDesc.maxBufferBindCount = 2
@@ -90,6 +106,10 @@ var signalValue: UInt64 = 0
 
 let nSteps = 5000
 let logEvery = 100
+var t: UInt32 = 0
+let BETA1: Float = 0.9
+let BETA2: Float = 0.999
+let LR: Float = 1e-3
 
 for step in 0..<nSteps {
     for s in 0..<K_BATCH {
@@ -98,6 +118,11 @@ for step in 0..<nSteps {
         samplesFloats[base + SAMPLE_X] = Float(Int.random(in: 0..<SRC_W))
     }
 
+    t += 1
+    let bc1 = 1.0 - powf(BETA1, Float(t))
+    let bc2 = 1.0 - powf(BETA2, Float(t))
+    adamConstsPtr.pointee = AdamConstants(lr: LR, bc1: bc1, bc2: bc2)
+    
     let cmd = ctx.device.makeCommandBuffer()!
     cmd.beginCommandBuffer(allocator: ctx.allocator)
 
@@ -108,14 +133,14 @@ for step in 0..<nSteps {
                                   threadsPerThreadgroup: MTLSize(width: K_BATCH, height: 1, depth: 1))
     trainEnc.endEncoding()
 
-    let sgdEnc = cmd.makeComputeCommandEncoder()!
-    sgdEnc.setComputePipelineState(sgdPso)
-    sgdEnc.setArgumentTable(sgdArgTable)
+    let adamEnc = cmd.makeComputeCommandEncoder()!
+    adamEnc.setComputePipelineState(adamPso)
+    adamEnc.setArgumentTable(adamArgTable)
     let tgSize = 256
     let tgx = (GRID_TOTAL + tgSize - 1) / tgSize
-    sgdEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: tgx,   height: 1, depth: 1),
+    adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: tgx,   height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-    sgdEnc.endEncoding()
+    adamEnc.endEncoding()
 
     cmd.endCommandBuffer()
     ctx.queue.commit([cmd])
