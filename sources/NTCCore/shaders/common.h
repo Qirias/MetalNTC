@@ -27,3 +27,25 @@ inline float hard_gelu_prime(float x) {
 inline void atomic_add_fixed(device atomic_int* slot, float val) {
     atomic_fetch_add_explicit(slot, int(rint(val * float(SCALE))), memory_order_relaxed);
 }
+
+inline void bilinear_sample(device const float* grid,
+                            uint W, uint F,
+                            int ix0, int iy0, float fx, float fy,
+                            thread float* w,
+                            thread uint*  c,
+                            thread float* features) {
+    w[0] = (1.0f - fx) * (1.0f - fy);  // w00
+    w[1] =         fx  * (1.0f - fy);  // w01
+    w[2] = (1.0f - fx) *         fy;   // w10
+    w[3] =         fx  *         fy;   // w11
+
+    c[0] = (uint(iy0)     * W + uint(ix0))     * F;
+    c[1] = (uint(iy0)     * W + uint(ix0 + 1)) * F;
+    c[2] = (uint(iy0 + 1) * W + uint(ix0))     * F;
+    c[3] = (uint(iy0 + 1) * W + uint(ix0 + 1)) * F;
+
+    for (uint i = 0; i < F; i++) {
+        features[i] = w[0]*grid[c[0]+i] + w[1]*grid[c[1]+i]
+                    + w[2]*grid[c[2]+i] + w[3]*grid[c[3]+i];
+    }
+}

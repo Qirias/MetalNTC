@@ -2,8 +2,8 @@
 #include "common.h"
 using namespace metal;
 
-#define GRID_H  64
-#define GRID_W  64
+#define GRID_H  256
+#define GRID_W  256
 #define GRID_CH 3
 #define GRID_TOTAL  (GRID_H * GRID_W * GRID_CH)
 

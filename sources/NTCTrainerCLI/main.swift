@@ -4,27 +4,41 @@ import NTCAssets
 import Metal
 import Foundation
 
-let GRID_H = 64, GRID_W = 64, GRID_CH = 3
-let GRID_TOTAL = GRID_H * GRID_W * GRID_CH
-let SRC_H = 4096, SRC_W = 4096
+let GRID_H = 256
+let GRID_W = 256
+let GRID_F = 8
+let GRID_TOTAL = (GRID_H * GRID_W * GRID_F)
+
+let K_HIDDEN = 32
+let K_OUT = 3
 let K_BATCH = 1024
-let SAMPLE_Y = 0, SAMPLE_X = 1, SAMPLE_LOSS = 2
+
+let SRC_W = 4096
+let SRC_H = 4096
+
+let OFFSET_W1   = (GRID_TOTAL)
+let OFFSET_B1   = (OFFSET_W1 + GRID_F * K_HIDDEN)
+let OFFSET_W2   = (OFFSET_B1 + K_HIDDEN)
+let OFFSET_B2   = (OFFSET_W2 + K_HIDDEN * K_OUT)
+let TOTAL       = (OFFSET_B2 + K_OUT)
+
+let SAMPLE_X      = 0
+let SAMPLE_Y      = 1
+let SAMPLE_LOSS   = 2
 let SAMPLE_STRIDE = 3
 
-let srcURL = URL(fileURLWithPath:
-    "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/ManholeCover010_4K-PNG_Color.png"
-)
-let img = try load_image(at: srcURL, channels: GRID_CH)
+
+let srcURL = URL(fileURLWithPath: "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/ManholeCover010_4K-PNG_Color.png")
+let img = try load_image(at: srcURL, channels: K_OUT)
 
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
-let trainPso = try ctx.makeComputePipelineState(function: "grid_fit_train")
-let inferPso = try ctx.makeComputePipelineState(function: "grid_fit_infer")
+let trainPso = try ctx.makeComputePipelineState(function: "grid_mlp_train")
+let inferPso = try ctx.makeComputePipelineState(function: "grid_mlp_infer")
 let adamPso   = try ctx.makeComputePipelineState(function: "adam_step")
 
-// learnable grid and gradient mirror
-let paramsBuffer = ctx.device.makeBuffer(length: GRID_TOTAL * 2 * MemoryLayout<Float>.stride,
+let paramsBuffer = ctx.device.makeBuffer(length: TOTAL * 2 * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
-let paramsFloats = paramsBuffer.contents().bindMemory(to: Float.self, capacity: GRID_TOTAL * 2)
+let paramsFloats = paramsBuffer.contents().bindMemory(to: Float.self, capacity: TOTAL * 2)
 
 let samplesBuffer = ctx.device.makeBuffer(length: K_BATCH * SAMPLE_STRIDE * MemoryLayout<Float>.stride,
                                           options: .storageModeShared)!
@@ -32,15 +46,16 @@ let samplesFloats = samplesBuffer.contents().bindMemory(to: Float.self, capacity
 
 let sourceBuffer = ctx.device.makeBuffer(length: img.pixels.count * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
-let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * GRID_CH * MemoryLayout<Float>.stride,
+
+let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * K_OUT * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
 img.pixels.withUnsafeBufferPointer { buf in
     sourceBuffer.contents().copyMemory(from: buf.baseAddress!, byteCount: buf.count * MemoryLayout<Float>.stride)
 }
 
-let mBuffer = ctx.device.makeBuffer(length: GRID_TOTAL * MemoryLayout<Float>.stride,
+let mBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                     options: .storageModeShared)!
-let vBuffer = ctx.device.makeBuffer(length: GRID_TOTAL * MemoryLayout<Float>.stride,
+let vBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                     options: .storageModeShared)!
 memset(mBuffer.contents(), 0, GRID_TOTAL * MemoryLayout<Float>.stride)
 memset(vBuffer.contents(), 0, GRID_TOTAL * MemoryLayout<Float>.stride)
@@ -55,11 +70,12 @@ let adamConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<AdamConstants>
                                              options: .storageModeShared)!
 let adamConstsPtr = adamConstsBuffer.contents().bindMemory(to: AdamConstants.self, capacity: 1)
 
-let nFloatsBuffer = ctx.device.makeBuffer(length: MemoryLayout<UInt32>.stride,
+let totalFloatsBuffer = ctx.device.makeBuffer(length: MemoryLayout<UInt32>.stride,
                                           options: .storageModeShared)!
 
-let nFloatsPtr = nFloatsBuffer.contents().bindMemory(to: UInt32.self, capacity: 1)
-nFloatsPtr.pointee = UInt32(GRID_TOTAL)
+let totalFloatsPtr = totalFloatsBuffer.contents().bindMemory(to: UInt32.self, capacity: 1)
+
+totalFloatsPtr.pointee = UInt32(TOTAL)
 
 let setDesc = MTLResidencySetDescriptor()
 setDesc.label = "grid_fit_train.residency"
@@ -68,7 +84,7 @@ let residencySet = try ctx.device.makeResidencySet(descriptor: setDesc)
 residencySet.addAllocation(paramsBuffer)
 residencySet.addAllocation(samplesBuffer)
 residencySet.addAllocation(sourceBuffer)
-residencySet.addAllocation(nFloatsBuffer)
+residencySet.addAllocation(totalFloatsBuffer)
 residencySet.addAllocation(outputBuffer)
 residencySet.addAllocation(mBuffer)
 residencySet.addAllocation(vBuffer)
@@ -90,7 +106,7 @@ adamArgTable.setAddress(paramsBuffer.gpuAddress,      index: 0)
 adamArgTable.setAddress(mBuffer.gpuAddress,           index: 1)
 adamArgTable.setAddress(vBuffer.gpuAddress,           index: 2)
 adamArgTable.setAddress(adamConstsBuffer.gpuAddress,  index: 3)
-adamArgTable.setAddress(nFloatsBuffer.gpuAddress,     index: 4)
+adamArgTable.setAddress(totalFloatsBuffer.gpuAddress,     index: 4)
 
 let inferArgDesc = MTL4ArgumentTableDescriptor()
 inferArgDesc.maxBufferBindCount = 2
@@ -98,13 +114,33 @@ let inferArgTable = try ctx.device.makeArgumentTable(descriptor: inferArgDesc)
 inferArgTable.setAddress(paramsBuffer.gpuAddress, index: 0)
 inferArgTable.setAddress(outputBuffer.gpuAddress, index: 1)
 
-for i in 0..<GRID_TOTAL { paramsFloats[i] = Float.random(in: -0.05...0.05) }
-for i in GRID_TOTAL..<(GRID_TOTAL * 2) { paramsFloats[i] = 0 }
+// https://en.wikipedia.org/wiki/Continuous_uniform_distribution
+// Kaiming He uniform. Float.random() is uniform
+// target Var(X) = 2/fan_in. Uniform(-a, a) has variance a^2/3
+// (b - a)^2 / 12 where a and b are interval endpoints. Our a is the half-width:
+// our lower endpoint is -a and upper is +a
+// width = upper - lower = a - (-a) = 2a
+// width^2 = (2a)^2 = 4a^2
+// variance = 4a^2 / 12 = a^2/3
+
+// a^2/3 = 2 / fan_in -> uniform variance = target variance
+// a^2 = 6 / fan_in
+// so a = sqrt(6/fan_in)
+
+let w1Bound = sqrtf(6.0 / Float(GRID_F))
+let w2Bound = sqrtf(6.0 / Float(K_HIDDEN))
+
+for i in 0..<GRID_TOTAL         { paramsFloats[i] = Float.random(in: -0.05...0.05) }
+for i in OFFSET_W1..<OFFSET_B1  { paramsFloats[i] = Float.random(in: -w1Bound...w1Bound) }
+for i in OFFSET_B1..<OFFSET_W2  { paramsFloats[i] = 0 }
+for i in OFFSET_W2..<OFFSET_B2  { paramsFloats[i] = Float.random(in: -w2Bound...w2Bound) }
+for i in OFFSET_B2..<TOTAL      { paramsFloats[i] = 0 }
+for i in TOTAL..<(TOTAL * 2)    { paramsFloats[i] = 0 }
 
 let event = ctx.device.makeSharedEvent()!
 var signalValue: UInt64 = 0
 
-let nSteps = 5000
+let nSteps = 10000
 let logEvery = 100
 var t: UInt32 = 0
 let BETA1: Float = 0.9
@@ -129,16 +165,17 @@ for step in 0..<nSteps {
     let trainEnc = cmd.makeComputeCommandEncoder()!
     trainEnc.setComputePipelineState(trainPso)
     trainEnc.setArgumentTable(trainArgTable)
-    trainEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: 1,       height: 1, depth: 1),
-                                  threadsPerThreadgroup: MTLSize(width: K_BATCH, height: 1, depth: 1))
+    let tgSize = 256
+    let trainTgx = (K_BATCH + tgSize - 1) / tgSize
+    trainEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: trainTgx,   height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     trainEnc.endEncoding()
 
     let adamEnc = cmd.makeComputeCommandEncoder()!
     adamEnc.setComputePipelineState(adamPso)
     adamEnc.setArgumentTable(adamArgTable)
-    let tgSize = 256
-    let tgx = (GRID_TOTAL + tgSize - 1) / tgSize
-    adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: tgx,   height: 1, depth: 1),
+    let adamTgx = (TOTAL + tgSize - 1) / tgSize
+    adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: adamTgx,   height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     adamEnc.endEncoding()
 
@@ -177,12 +214,12 @@ signalValue += 1
 ctx.queue.signalEvent(event, value: signalValue)
 event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
 
-let pixelCount = SRC_H * SRC_W * GRID_CH
+let pixelCount = SRC_H * SRC_W * K_OUT
 let outPtr = outputBuffer.contents().bindMemory(to: Float.self, capacity: pixelCount)
 let outPixels = Array(UnsafeBufferPointer(start: outPtr, count: pixelCount))
-let outImg = LoadedImage(pixels: outPixels, height: SRC_H, width: SRC_W, channels: GRID_CH)
+let outImg = LoadedImage(pixels: outPixels, height: SRC_H, width: SRC_W, channels: K_OUT)
 
 let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
-let outURL = outDir.appendingPathComponent("grid_fit_color.png")
+let outURL = outDir.appendingPathComponent("grid_mlp_color.png")
 try save_image(outImg, to: outURL)
 print("saved infer output to \(outURL.path)")
