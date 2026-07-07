@@ -17,8 +17,10 @@ using namespace metal;
 #define OFFSET_W1   (GRID_TOTAL)
 #define OFFSET_B1   (OFFSET_W1 + GRID_F * K_HIDDEN)
 #define OFFSET_W2   (OFFSET_B1 + K_HIDDEN)
-#define OFFSET_B2   (OFFSET_W2 + K_HIDDEN * K_OUT)
-#define TOTAL       (OFFSET_B2 + K_OUT)
+#define OFFSET_B2   (OFFSET_W2 + K_HIDDEN * K_HIDDEN)
+#define OFFSET_W3   (OFFSET_B2 + K_HIDDEN)
+#define OFFSET_B3   (OFFSET_W3 + K_HIDDEN * K_OUT)
+#define TOTAL       (OFFSET_B3 + K_OUT)
 
 #define SAMPLE_X      0
 #define SAMPLE_Y      1
@@ -60,25 +62,37 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
     // ========
     // Forward
     // ========
+    float pre1[K_HIDDEN];
+    float pre2[K_HIDDEN];
+    float hid1[K_HIDDEN];
+    float hid2[K_HIDDEN];
     
     // Linear1 + hardGELU
-    float pre[K_HIDDEN];
-    float hid[K_HIDDEN];
     for (uint h = 0; h < K_HIDDEN; h++) {
         float acc = params[OFFSET_B1 + h];
         for (uint i = 0; i < GRID_F; i++) {
             acc += params[OFFSET_W1 + i * K_HIDDEN + h] * features[i];
         }
-        pre[h] = acc;
-        hid[h] = hard_gelu(pre[h]);
+        pre1[h] = acc;
+        hid1[h] = hard_gelu(pre1[h]);
+    }
+    
+    // Linear2
+    for (uint h = 0; h < K_HIDDEN; h++) {
+        float acc = params[OFFSET_B2 + h];
+        for (uint i = 0; i < K_HIDDEN; i++) {
+            acc += params[OFFSET_W2 + i * K_HIDDEN + h] * hid1[i];
+        }
+        pre2[h] = acc;
+        hid2[h] = hard_gelu(pre2[h]);
     }
 
-    // Linear2
+    // Linear3
     float pred[K_OUT];
     for (uint k = 0; k < K_OUT; k++) {
-        float acc = params[OFFSET_B2 + k];
+        float acc = params[OFFSET_B3 + k];
         for (uint h = 0; h < K_HIDDEN; h++) {
-            acc += params[OFFSET_W2 + h * K_OUT + k] * hid[h];
+            acc += params[OFFSET_W3 + h * K_OUT + k] * hid2[h];
         }
         pred[k] = acc;
     }
@@ -97,27 +111,50 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
     // ========
     // Backward
     // ========
-    // Linear2
-    float d_hid[K_HIDDEN];
+    // Linear3
+    float d_hid2[K_HIDDEN];
     for (uint h = 0; h < K_HIDDEN; h++) {
-        d_hid[h] = 0;
+        d_hid2[h] = 0;
     }
 
     for (uint k = 0; k < K_OUT; k++) {
-        atomic_add_fixed(&grads[OFFSET_B2 + k], d_pred[k]);
+        atomic_add_fixed(&grads[OFFSET_B3 + k], d_pred[k]);
     }
 
     for (uint h = 0; h < K_HIDDEN; h++) {
         for (uint k = 0; k < K_OUT; k++) {
-            atomic_add_fixed(&grads[OFFSET_W2 + h * K_OUT + k], d_pred[k] * hid[h]);
-            d_hid[h] += params[OFFSET_W2 + h * K_OUT + k] * d_pred[k];
+            atomic_add_fixed(&grads[OFFSET_W3 + h * K_OUT + k], d_pred[k] * hid2[h]);
+            d_hid2[h] += params[OFFSET_W3 + h * K_OUT + k] * d_pred[k];
+        }
+    }
+    
+    // hardGELU
+    float d_pre2[K_HIDDEN];
+    for (uint h = 0; h < K_HIDDEN; h++) {
+        d_pre2[h] = d_hid2[h] * hard_gelu_prime(pre2[h]);
+    }
+    
+    // Linear2
+    float d_hid1[K_HIDDEN];
+    for (uint h = 0; h < K_HIDDEN; h++) {
+        d_hid1[h] = 0;
+    }
+
+    for (uint k = 0; k < K_HIDDEN; k++) {
+        atomic_add_fixed(&grads[OFFSET_B2 + k], d_pre2[k]);
+    }
+
+    for (uint h = 0; h < K_HIDDEN; h++) {
+        for (uint k = 0; k < K_HIDDEN; k++) {
+            atomic_add_fixed(&grads[OFFSET_W2 + h * K_HIDDEN + k], d_pre2[k] * hid1[h]);
+            d_hid1[h] += params[OFFSET_W2 + h * K_HIDDEN + k] * d_pre2[k];
         }
     }
 
     // hardGELU
-    float d_pre[K_HIDDEN];
+    float d_pre1[K_HIDDEN];
     for (uint h = 0; h < K_HIDDEN; h++) {
-        d_pre[h] = d_hid[h] * hard_gelu_prime(pre[h]);
+        d_pre1[h] = d_hid1[h] * hard_gelu_prime(pre1[h]);
     }
 
     // Linear1
@@ -127,13 +164,13 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
     }
 
     for (uint h = 0; h < K_HIDDEN; h++) {
-        atomic_add_fixed(&grads[OFFSET_B1 + h], d_pre[h]);
+        atomic_add_fixed(&grads[OFFSET_B1 + h], d_pre1[h]);
     }
 
     for (uint i = 0; i < GRID_F; i++) {
         for (uint h = 0; h < K_HIDDEN; h++) {
-            atomic_add_fixed(&grads[OFFSET_W1 + i * K_HIDDEN + h], d_pre[h] * features[i]);
-            d_feats[i] += params[OFFSET_W1 + i * K_HIDDEN + h] * d_pre[h];
+            atomic_add_fixed(&grads[OFFSET_W1 + i * K_HIDDEN + h], d_pre1[h] * features[i]);
+            d_feats[i] += params[OFFSET_W1 + i * K_HIDDEN + h] * d_pre1[h];
         }
     }
 

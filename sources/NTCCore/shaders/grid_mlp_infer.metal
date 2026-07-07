@@ -16,7 +16,9 @@ using namespace metal;
 #define OFFSET_W1   (GRID_TOTAL)
 #define OFFSET_B1   (OFFSET_W1 + GRID_F * K_HIDDEN)
 #define OFFSET_W2   (OFFSET_B1 + K_HIDDEN)
-#define OFFSET_B2   (OFFSET_W2 + K_HIDDEN * K_OUT)
+#define OFFSET_B2   (OFFSET_W2 + K_HIDDEN * K_HIDDEN)
+#define OFFSET_W3   (OFFSET_B2 + K_HIDDEN)
+#define OFFSET_B3   (OFFSET_W3 + K_HIDDEN * K_OUT)
 
 kernel void grid_mlp_infer(device const float* params  [[buffer(0)]],
                            device       float* output  [[buffer(1)]],
@@ -48,22 +50,34 @@ kernel void grid_mlp_infer(device const float* params  [[buffer(0)]],
     // ========
     
     // Linear1 + hardGELU
-    float pre[K_HIDDEN];
-    float hid[K_HIDDEN];
+    float pre1[K_HIDDEN];
+    float pre2[K_HIDDEN];
+    float hid1[K_HIDDEN];
+    float hid2[K_HIDDEN];
     for (uint h = 0; h < K_HIDDEN; h++) {
         float acc = params[OFFSET_B1 + h];
         for (uint i = 0; i < GRID_F; i++) {
             acc += params[OFFSET_W1 + i * K_HIDDEN + h] * features[i];
         }
-        pre[h] = acc;
-        hid[h] = hard_gelu(pre[h]);
+        pre1[h] = acc;
+        hid1[h] = hard_gelu(pre1[h]);
+    }
+    
+    // Linear2
+    for (uint h = 0; h < K_HIDDEN; h++) {
+        float acc = params[OFFSET_B2 + h];
+        for (uint i = 0; i < K_HIDDEN; i++) {
+            acc += params[OFFSET_W2 + i * K_HIDDEN + h] * hid1[i];
+        }
+        pre2[h] = acc;
+        hid2[h] = hard_gelu(pre2[h]);
     }
 
-    // Linear2
+    // Linear3
     for (uint k = 0; k < K_OUT; k++) {
-        float acc = params[OFFSET_B2 + k];
+        float acc = params[OFFSET_B3 + k];
         for (uint h = 0; h < K_HIDDEN; h++) {
-            acc += params[OFFSET_W2 + h * K_OUT + k] * hid[h];
+            acc += params[OFFSET_W3 + h * K_OUT + k] * hid2[h];
         }
         output[out_base + k] = acc;
     }

@@ -1,5 +1,4 @@
 import NTCCore
-import NTCTrainer
 import NTCAssets
 import Metal
 import Foundation
@@ -19,8 +18,10 @@ let SRC_H = 4096
 let OFFSET_W1   = (GRID_TOTAL)
 let OFFSET_B1   = (OFFSET_W1 + GRID_F * K_HIDDEN)
 let OFFSET_W2   = (OFFSET_B1 + K_HIDDEN)
-let OFFSET_B2   = (OFFSET_W2 + K_HIDDEN * K_OUT)
-let TOTAL       = (OFFSET_B2 + K_OUT)
+let OFFSET_B2   = (OFFSET_W2 + K_HIDDEN * K_HIDDEN)
+let OFFSET_W3   = (OFFSET_B2 + K_HIDDEN)
+let OFFSET_B3   = (OFFSET_W3 + K_HIDDEN * K_OUT)
+let TOTAL       = (OFFSET_B3 + K_OUT)
 
 let SAMPLE_X      = 0
 let SAMPLE_Y      = 1
@@ -57,8 +58,8 @@ let mBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                     options: .storageModeShared)!
 let vBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                     options: .storageModeShared)!
-memset(mBuffer.contents(), 0, GRID_TOTAL * MemoryLayout<Float>.stride)
-memset(vBuffer.contents(), 0, GRID_TOTAL * MemoryLayout<Float>.stride)
+memset(mBuffer.contents(), 0, TOTAL * MemoryLayout<Float>.stride)
+memset(vBuffer.contents(), 0, TOTAL * MemoryLayout<Float>.stride)
 
 struct AdamConstants {
     var lr: Float;
@@ -134,7 +135,9 @@ for i in 0..<GRID_TOTAL         { paramsFloats[i] = Float.random(in: -0.05...0.0
 for i in OFFSET_W1..<OFFSET_B1  { paramsFloats[i] = Float.random(in: -w1Bound...w1Bound) }
 for i in OFFSET_B1..<OFFSET_W2  { paramsFloats[i] = 0 }
 for i in OFFSET_W2..<OFFSET_B2  { paramsFloats[i] = Float.random(in: -w2Bound...w2Bound) }
-for i in OFFSET_B2..<TOTAL      { paramsFloats[i] = 0 }
+for i in OFFSET_B2..<OFFSET_W3  { paramsFloats[i] = 0 }
+for i in OFFSET_W3..<OFFSET_B3  { paramsFloats[i] = Float.random(in: -w2Bound...w2Bound) }
+for i in OFFSET_B3..<TOTAL      { paramsFloats[i] = 0 }
 for i in TOTAL..<(TOTAL * 2)    { paramsFloats[i] = 0 }
 
 let event = ctx.device.makeSharedEvent()!
@@ -168,7 +171,7 @@ for step in 0..<nSteps {
     let tgSize = 256
     let trainTgx = (K_BATCH + tgSize - 1) / tgSize
     trainEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: trainTgx,   height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+                                  threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     trainEnc.endEncoding()
 
     let adamEnc = cmd.makeComputeCommandEncoder()!
@@ -176,7 +179,7 @@ for step in 0..<nSteps {
     adamEnc.setArgumentTable(adamArgTable)
     let adamTgx = (TOTAL + tgSize - 1) / tgSize
     adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: adamTgx,   height: 1, depth: 1),
-                                threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     adamEnc.endEncoding()
 
     cmd.endCommandBuffer()

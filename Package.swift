@@ -7,12 +7,9 @@ let package = Package(
         .macOS("26.0")
     ],
     products: [
-        .library(name: "NTCCore",      targets: ["NTCCore"]),
-        .library(name: "NTCAssets",    targets: ["NTCAssets"]),
-        .library(name: "NTCTrainer",   targets: ["NTCTrainer"]),
-        .library(name: "NTCInference", targets: ["NTCInference"]),
-        .executable(name: "NTCTrainerCLI",   targets: ["NTCTrainerCLI"]),
-        .executable(name: "NTCDemoRenderer", targets: ["NTCDemoRenderer"]),
+        .library(name: "NTCCore",   targets: ["NTCCore"]),
+        .library(name: "NTCAssets", targets: ["NTCAssets"]),
+        .executable(name: "NTCTrainerCLI", targets: ["NTCTrainerCLI"]),
     ],
     targets: [
         .target(
@@ -25,35 +22,10 @@ let package = Package(
             dependencies: ["NTCCore"],
             path: "sources/NTCAssets"
         ),
-        .target(
-            name: "NTCTrainer",
-            dependencies: ["NTCCore"],
-            path: "sources/NTCTrainer"
-        ),
-        .target(
-            name: "NTCInference",
-            dependencies: ["NTCCore"],
-            path: "sources/NTCInference"
-        ),
         .executableTarget(
             name: "NTCTrainerCLI",
-            dependencies: ["NTCTrainer", "NTCAssets", "NTCCore"],
+            dependencies: ["NTCAssets", "NTCCore"],
             path: "sources/NTCTrainerCLI"
-        ),
-        .executableTarget(
-            name: "NTCDemoRenderer",
-            dependencies: ["NTCInference", "NTCAssets"],
-            path: "sources/NTCDemoRenderer"
-        ),
-        .testTarget(
-            name: "NTCTrainerTests",
-            dependencies: ["NTCTrainer", "NTCAssets"],
-            path: "tests/NTCTrainerTests"
-        ),
-        .testTarget(
-            name: "NTCInferenceTests",
-            dependencies: ["NTCInference", "NTCAssets"],
-            path: "tests/NTCInferenceTests"
         ),
         .testTarget(
             name: "NTCCoreTests",
