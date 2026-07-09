@@ -3,7 +3,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-constant int SCALE = 1 << 18;
+constant int SCALE = 1 << 24;
 
 // a cheap piecewise approximation of GELU
 inline float hard_gelu(float x) {
@@ -25,7 +25,9 @@ inline float hard_gelu_prime(float x) {
 }
 
 inline void atomic_add_fixed(device atomic_int* slot, float val) {
-    atomic_fetch_add_explicit(slot, int(rint(val * float(SCALE))), memory_order_relaxed);
+    // 2^30 leaves 2x headroom below INT32_MAX per single write
+    float scaled = clamp(val * float(SCALE), -1073741824.0f, 1073741824.0f);
+    atomic_fetch_add_explicit(slot, int(rint(scaled)), memory_order_relaxed);
 }
 
 inline void bilinear_sample(device const float* grid,
@@ -47,5 +49,44 @@ inline void bilinear_sample(device const float* grid,
     for (uint i = 0; i < F; i++) {
         features[i] = w[0]*grid[c[0]+i] + w[1]*grid[c[1]+i]
                     + w[2]*grid[c[2]+i] + w[3]*grid[c[3]+i];
+    }
+}
+
+inline void mlp_forward(device const float* params,
+                        uint off_w1, uint off_b1,
+                        uint off_w2, uint off_b2,
+                        uint off_w3, uint off_b3,
+                        uint fan_in, uint hidden, uint out_dim,
+                        thread const float* features,
+                        thread float* pre1, thread float* hid1,
+                        thread float* pre2, thread float* hid2,
+                        thread float* pred) {
+    // Linear1 + hardGELU
+    for (uint h = 0; h < hidden; h++) {
+        float acc = params[off_b1 + h];
+        for (uint i = 0; i < fan_in; i++) {
+            acc += params[off_w1 + i * hidden + h] * features[i];
+        }
+        pre1[h] = acc;
+        hid1[h] = hard_gelu(pre1[h]);
+    }
+
+    // Linear2 + hardGELU
+    for (uint h = 0; h < hidden; h++) {
+        float acc = params[off_b2 + h];
+        for (uint i = 0; i < hidden; i++) {
+            acc += params[off_w2 + i * hidden + h] * hid1[i];
+        }
+        pre2[h] = acc;
+        hid2[h] = hard_gelu(pre2[h]);
+    }
+
+    // Linear3
+    for (uint k = 0; k < out_dim; k++) {
+        float acc = params[off_b3 + k];
+        for (uint h = 0; h < hidden; h++) {
+            acc += params[off_w3 + h * out_dim + k] * hid2[h];
+        }
+        pred[k] = acc;
     }
 }

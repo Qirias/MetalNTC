@@ -2,20 +2,29 @@
 #include "common.h"
 using namespace metal;
 
-#define GRID_H  256
-#define GRID_W  256
-#define GRID_F  8
-#define GRID_TOTAL  (GRID_H * GRID_W * GRID_F)
+#define GRID_H1  1024
+#define GRID_W1  1024
+#define GRID_F1  8
+#define GRID1_TOTAL  (GRID_H1 * GRID_W1 * GRID_F1)
 
-#define K_HIDDEN 32
+#define GRID_H2  512
+#define GRID_W2  512
+#define GRID_F2  8
+#define GRID2_TOTAL  (GRID_H2 * GRID_W2 * GRID_F2)
+
+#define GRID_F_TOTAL (GRID_F1 + GRID_F2)
+
+#define K_HIDDEN 64
 #define K_OUT    3
 #define K_BATCH  1024
 
 #define SRC_W 4096
 #define SRC_H 4096
 
-#define OFFSET_W1   (GRID_TOTAL)
-#define OFFSET_B1   (OFFSET_W1 + GRID_F * K_HIDDEN)
+#define OFFSET_G1   0
+#define OFFSET_G2   (GRID1_TOTAL)
+#define OFFSET_W1   (OFFSET_G2 + GRID2_TOTAL)
+#define OFFSET_B1   (OFFSET_W1 + GRID_F_TOTAL * K_HIDDEN)
 #define OFFSET_W2   (OFFSET_B1 + K_HIDDEN)
 #define OFFSET_B2   (OFFSET_W2 + K_HIDDEN * K_HIDDEN)
 #define OFFSET_W3   (OFFSET_B2 + K_HIDDEN)
@@ -45,19 +54,31 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
         gt[ch] = source[src_base + ch];
     }
 
-    float ix = float(x) * float(GRID_W - 1) / float(SRC_W - 1);
-    float iy = float(y) * float(GRID_H - 1) / float(SRC_H - 1);
-    int iy0 = int(floor(iy));
-    int ix0 = int(floor(ix));
-    iy0 = min(iy0, GRID_H - 2);
-    ix0 = min(ix0, GRID_W - 2);
-    float fy = iy - float(iy0);
-    float fx = ix - float(ix0);
+    float ix1 = float(x) * float(GRID_W1 - 1) / float(SRC_W - 1);
+    float iy1 = float(y) * float(GRID_H1 - 1) / float(SRC_H - 1);
+    int iy0_1 = int(floor(iy1));
+    int ix0_1 = int(floor(ix1));
+    iy0_1 = min(iy0_1, GRID_H1 - 2);
+    ix0_1 = min(ix0_1, GRID_W1 - 2);
+    float fy1 = iy1 - float(iy0_1);
+    float fx1 = ix1 - float(ix0_1);
+    
+    float ix2 = float(x) * float(GRID_W2 - 1) / float(SRC_W - 1);
+    float iy2 = float(y) * float(GRID_H2 - 1) / float(SRC_H - 1);
+    int iy0_2 = int(floor(iy2));
+    int ix0_2 = int(floor(ix2));
+    iy0_2 = min(iy0_2, GRID_H2 - 2);
+    ix0_2 = min(ix0_2, GRID_W2 - 2);
+    float fy2 = iy2 - float(iy0_2);
+    float fx2 = ix2 - float(ix0_2);
 
-    float w[4];
-    uint  c[4];
-    float features[GRID_F];
-    bilinear_sample(params, GRID_W, GRID_F, ix0, iy0, fx, fy, w, c, features);
+    float w1[4];
+    float w2[4];
+    uint  c1[4];
+    uint  c2[4];
+    float features[GRID_F_TOTAL];
+    bilinear_sample(params            , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features);
+    bilinear_sample(params + OFFSET_G2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1);
     
     // ========
     // Forward
@@ -66,36 +87,14 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
     float pre2[K_HIDDEN];
     float hid1[K_HIDDEN];
     float hid2[K_HIDDEN];
-    
-    // Linear1 + hardGELU
-    for (uint h = 0; h < K_HIDDEN; h++) {
-        float acc = params[OFFSET_B1 + h];
-        for (uint i = 0; i < GRID_F; i++) {
-            acc += params[OFFSET_W1 + i * K_HIDDEN + h] * features[i];
-        }
-        pre1[h] = acc;
-        hid1[h] = hard_gelu(pre1[h]);
-    }
-    
-    // Linear2
-    for (uint h = 0; h < K_HIDDEN; h++) {
-        float acc = params[OFFSET_B2 + h];
-        for (uint i = 0; i < K_HIDDEN; i++) {
-            acc += params[OFFSET_W2 + i * K_HIDDEN + h] * hid1[i];
-        }
-        pre2[h] = acc;
-        hid2[h] = hard_gelu(pre2[h]);
-    }
-
-    // Linear3
     float pred[K_OUT];
-    for (uint k = 0; k < K_OUT; k++) {
-        float acc = params[OFFSET_B3 + k];
-        for (uint h = 0; h < K_HIDDEN; h++) {
-            acc += params[OFFSET_W3 + h * K_OUT + k] * hid2[h];
-        }
-        pred[k] = acc;
-    }
+    mlp_forward(params,
+                OFFSET_W1, OFFSET_B1,
+                OFFSET_W2, OFFSET_B2,
+                OFFSET_W3, OFFSET_B3,
+                GRID_F_TOTAL, K_HIDDEN, K_OUT,
+                features,
+                pre1, hid1, pre2, hid2, pred);
 
     // Loss + d_pred
     float diff[K_OUT];
@@ -158,8 +157,8 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
     }
 
     // Linear1
-    float d_feats[GRID_F];
-    for (uint i = 0; i < GRID_F; i++) {
+    float d_feats[GRID_F_TOTAL];
+    for (uint i = 0; i < GRID_F_TOTAL; i++) {
         d_feats[i] = 0;
     }
 
@@ -167,7 +166,7 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
         atomic_add_fixed(&grads[OFFSET_B1 + h], d_pre1[h]);
     }
 
-    for (uint i = 0; i < GRID_F; i++) {
+    for (uint i = 0; i < GRID_F_TOTAL; i++) {
         for (uint h = 0; h < K_HIDDEN; h++) {
             atomic_add_fixed(&grads[OFFSET_W1 + i * K_HIDDEN + h], d_pre1[h] * features[i]);
             d_feats[i] += params[OFFSET_W1 + i * K_HIDDEN + h] * d_pre1[h];
@@ -175,9 +174,15 @@ kernel void grid_mlp_train(device       float* params  [[buffer(0)]],
     }
 
     // bilinear
-    for (uint i = 0; i < GRID_F; i++) {
+    for (uint i = 0; i < GRID_F1; i++) {
         for (uint corner = 0; corner < 4; corner++) {
-            atomic_add_fixed(&grads[c[corner] + i], w[corner] * d_feats[i]);
+            atomic_add_fixed(&grads[c1[corner] + i], w1[corner] * d_feats[i]);
+        }
+    }
+    
+    for (uint i = 0; i < GRID_F2; i++) {
+        for (uint corner = 0; corner < 4; corner++) {
+            atomic_add_fixed(&grads[OFFSET_G2 + c2[corner] + i], w2[corner] * d_feats[GRID_F1 + i]);
         }
     }
 }

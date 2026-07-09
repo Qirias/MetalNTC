@@ -3,25 +3,34 @@ import NTCAssets
 import Metal
 import Foundation
 
-let GRID_H = 256
-let GRID_W = 256
-let GRID_F = 8
-let GRID_TOTAL = (GRID_H * GRID_W * GRID_F)
+let GRID_H1 = 1024
+let GRID_W1 = 1024
+let GRID_F1 = 8
+let GRID1_TOTAL = GRID_H1 * GRID_W1 * GRID_F1
 
-let K_HIDDEN = 32
+let GRID_H2 = 512
+let GRID_W2 = 512
+let GRID_F2 = 8
+let GRID2_TOTAL = GRID_H2 * GRID_W2 * GRID_F2
+
+let GRID_F_TOTAL = GRID_F1 + GRID_F2
+
+let K_HIDDEN = 64
 let K_OUT = 3
 let K_BATCH = 1024
 
 let SRC_W = 4096
 let SRC_H = 4096
 
-let OFFSET_W1   = (GRID_TOTAL)
-let OFFSET_B1   = (OFFSET_W1 + GRID_F * K_HIDDEN)
-let OFFSET_W2   = (OFFSET_B1 + K_HIDDEN)
-let OFFSET_B2   = (OFFSET_W2 + K_HIDDEN * K_HIDDEN)
-let OFFSET_W3   = (OFFSET_B2 + K_HIDDEN)
-let OFFSET_B3   = (OFFSET_W3 + K_HIDDEN * K_OUT)
-let TOTAL       = (OFFSET_B3 + K_OUT)
+let OFFSET_G1   = 0
+let OFFSET_G2   = OFFSET_G1 + GRID1_TOTAL
+let OFFSET_W1   = OFFSET_G2 + GRID2_TOTAL
+let OFFSET_B1   = OFFSET_W1 + GRID_F_TOTAL * K_HIDDEN
+let OFFSET_W2   = OFFSET_B1 + K_HIDDEN
+let OFFSET_B2   = OFFSET_W2 + K_HIDDEN * K_HIDDEN
+let OFFSET_W3   = OFFSET_B2 + K_HIDDEN
+let OFFSET_B3   = OFFSET_W3 + K_HIDDEN * K_OUT
+let TOTAL       = OFFSET_B3 + K_OUT
 
 let SAMPLE_X      = 0
 let SAMPLE_Y      = 1
@@ -79,7 +88,7 @@ let totalFloatsPtr = totalFloatsBuffer.contents().bindMemory(to: UInt32.self, ca
 totalFloatsPtr.pointee = UInt32(TOTAL)
 
 let setDesc = MTLResidencySetDescriptor()
-setDesc.label = "grid_fit_train.residency"
+setDesc.label = "grid_mlp_train.residency"
 setDesc.initialCapacity = 7
 let residencySet = try ctx.device.makeResidencySet(descriptor: setDesc)
 residencySet.addAllocation(paramsBuffer)
@@ -128,10 +137,10 @@ inferArgTable.setAddress(outputBuffer.gpuAddress, index: 1)
 // a^2 = 6 / fan_in
 // so a = sqrt(6/fan_in)
 
-let w1Bound = sqrtf(6.0 / Float(GRID_F))
+let w1Bound = sqrtf(6.0 / Float(GRID_F_TOTAL))
 let w2Bound = sqrtf(6.0 / Float(K_HIDDEN))
 
-for i in 0..<GRID_TOTAL         { paramsFloats[i] = Float.random(in: -0.05...0.05) }
+for i in OFFSET_G1..<OFFSET_W1  { paramsFloats[i] = Float.random(in: -0.05...0.05) }
 for i in OFFSET_W1..<OFFSET_B1  { paramsFloats[i] = Float.random(in: -w1Bound...w1Bound) }
 for i in OFFSET_B1..<OFFSET_W2  { paramsFloats[i] = 0 }
 for i in OFFSET_W2..<OFFSET_B2  { paramsFloats[i] = Float.random(in: -w2Bound...w2Bound) }
@@ -151,6 +160,8 @@ let BETA2: Float = 0.999
 let LR: Float = 1e-3
 
 for step in 0..<nSteps {
+    event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
+
     for s in 0..<K_BATCH {
         let base = s * SAMPLE_STRIDE
         samplesFloats[base + SAMPLE_Y] = Float(Int.random(in: 0..<SRC_H))
