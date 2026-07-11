@@ -12,15 +12,15 @@ struct AdamConstants {
     float bc2;
 };
 
-kernel void adam_step(device       float*         params  [[buffer(0)]],
-                      device       float*         m       [[buffer(1)]],
-                      device       float*         v       [[buffer(2)]],
-                      device const AdamConstants* consts  [[buffer(3)]],
-                      device const uint*          nFloats [[buffer(4)]],
-                             uint                 gid     [[thread_position_in_grid]]) {
-    if (gid >= nFloats[0]) return;
+kernel void adam_step(device            float*          params      [[buffer(0)]],
+                      device            float*          m           [[buffer(1)]],
+                      device            float*          v           [[buffer(2)]],
+                             constant   AdamConstants&  adamConsts  [[buffer(3)]],
+                             constant   StepConstants&  stepConsts  [[buffer(4)]],
+                                        uint            gid         [[thread_position_in_grid]]) {
+    if (gid >= stepConsts.total) return;
 
-    device atomic_int* grad_slot = (device atomic_int*)params + gid + nFloats[0];
+    device atomic_int* grad_slot = (device atomic_int*)params + gid + stepConsts.total;
     int   grad_fixed = atomic_exchange_explicit(grad_slot, 0, memory_order_relaxed);
     float grad       = float(grad_fixed) / float(SCALE);
 
@@ -29,7 +29,7 @@ kernel void adam_step(device       float*         params  [[buffer(0)]],
     m[gid] = m_new;
     v[gid] = v_new;
 
-    float m_hat = m_new / consts->bc1;
-    float v_hat = v_new / consts->bc2;
-    params[gid] -= consts->lr * m_hat / (sqrt(v_hat) + EPS);
+    float m_hat = m_new / adamConsts.bc1;
+    float v_hat = v_new / adamConsts.bc2;
+    params[gid] -= adamConsts.lr * m_hat / (sqrt(v_hat) + EPS);
 }

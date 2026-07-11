@@ -80,12 +80,34 @@ let adamConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<AdamConstants>
                                              options: .storageModeShared)!
 let adamConstsPtr = adamConstsBuffer.contents().bindMemory(to: AdamConstants.self, capacity: 1)
 
-let totalFloatsBuffer = ctx.device.makeBuffer(length: MemoryLayout<UInt32>.stride,
-                                          options: .storageModeShared)!
+struct StepConstants {
+    var kBatch:   UInt32
+    var offsetG1: UInt32
+    var offsetG2: UInt32
+    var offsetW1: UInt32
+    var offsetB1: UInt32
+    var offsetW2: UInt32
+    var offsetB2: UInt32
+    var offsetW3: UInt32
+    var offsetB3: UInt32
+    var total:    UInt32
+}
 
-let totalFloatsPtr = totalFloatsBuffer.contents().bindMemory(to: UInt32.self, capacity: 1)
-
-totalFloatsPtr.pointee = UInt32(TOTAL)
+let stepConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<StepConstants>.stride,
+                                             options: .storageModeShared)!
+let stepConstsPtr = stepConstsBuffer.contents().bindMemory(to: StepConstants.self, capacity: 1)
+stepConstsPtr.pointee = StepConstants(
+    kBatch:   UInt32(K_BATCH),
+    offsetG1: UInt32(OFFSET_G1),
+    offsetG2: UInt32(OFFSET_G2),
+    offsetW1: UInt32(OFFSET_W1),
+    offsetB1: UInt32(OFFSET_B1),
+    offsetW2: UInt32(OFFSET_W2),
+    offsetB2: UInt32(OFFSET_B2),
+    offsetW3: UInt32(OFFSET_W3),
+    offsetB3: UInt32(OFFSET_B3),
+    total:    UInt32(TOTAL)
+)
 
 let setDesc = MTLResidencySetDescriptor()
 setDesc.label = "grid_mlp_train.residency"
@@ -94,7 +116,7 @@ let residencySet = try ctx.device.makeResidencySet(descriptor: setDesc)
 residencySet.addAllocation(paramsBuffer)
 residencySet.addAllocation(samplesBuffer)
 residencySet.addAllocation(sourceBuffer)
-residencySet.addAllocation(totalFloatsBuffer)
+residencySet.addAllocation(stepConstsBuffer)
 residencySet.addAllocation(outputBuffer)
 residencySet.addAllocation(mBuffer)
 residencySet.addAllocation(vBuffer)
@@ -103,26 +125,28 @@ residencySet.commit()
 ctx.queue.addResidencySet(residencySet)
 
 let trainArgDesc = MTL4ArgumentTableDescriptor()
-trainArgDesc.maxBufferBindCount = 3
+trainArgDesc.maxBufferBindCount = 4
 let trainArgTable = try ctx.device.makeArgumentTable(descriptor: trainArgDesc)
-trainArgTable.setAddress(paramsBuffer.gpuAddress,  index: 0)
-trainArgTable.setAddress(samplesBuffer.gpuAddress, index: 1)
-trainArgTable.setAddress(sourceBuffer.gpuAddress,  index: 2)
+trainArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
+trainArgTable.setAddress(samplesBuffer.gpuAddress,    index: 1)
+trainArgTable.setAddress(sourceBuffer.gpuAddress,     index: 2)
+trainArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 3)
 
 let adamArgDesc = MTL4ArgumentTableDescriptor()
 adamArgDesc.maxBufferBindCount = 5
 let adamArgTable = try ctx.device.makeArgumentTable(descriptor: adamArgDesc)
-adamArgTable.setAddress(paramsBuffer.gpuAddress,      index: 0)
-adamArgTable.setAddress(mBuffer.gpuAddress,           index: 1)
-adamArgTable.setAddress(vBuffer.gpuAddress,           index: 2)
-adamArgTable.setAddress(adamConstsBuffer.gpuAddress,  index: 3)
-adamArgTable.setAddress(totalFloatsBuffer.gpuAddress,     index: 4)
+adamArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
+adamArgTable.setAddress(mBuffer.gpuAddress,          index: 1)
+adamArgTable.setAddress(vBuffer.gpuAddress,          index: 2)
+adamArgTable.setAddress(adamConstsBuffer.gpuAddress, index: 3)
+adamArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 4)
 
 let inferArgDesc = MTL4ArgumentTableDescriptor()
-inferArgDesc.maxBufferBindCount = 2
+inferArgDesc.maxBufferBindCount = 3
 let inferArgTable = try ctx.device.makeArgumentTable(descriptor: inferArgDesc)
-inferArgTable.setAddress(paramsBuffer.gpuAddress, index: 0)
-inferArgTable.setAddress(outputBuffer.gpuAddress, index: 1)
+inferArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
+inferArgTable.setAddress(outputBuffer.gpuAddress,     index: 1)
+inferArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
 
 // https://en.wikipedia.org/wiki/Continuous_uniform_distribution
 // Kaiming He uniform. Float.random() is uniform

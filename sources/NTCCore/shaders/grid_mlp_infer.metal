@@ -20,18 +20,10 @@ using namespace metal;
 #define OUT_W 4096
 #define OUT_H 4096
 
-#define OFFSET_G1   0
-#define OFFSET_G2   (GRID1_TOTAL)
-#define OFFSET_W1   (OFFSET_G2 + GRID2_TOTAL)
-#define OFFSET_B1   (OFFSET_W1 + GRID_F_TOTAL * K_HIDDEN)
-#define OFFSET_W2   (OFFSET_B1 + K_HIDDEN)
-#define OFFSET_B2   (OFFSET_W2 + K_HIDDEN * K_HIDDEN)
-#define OFFSET_W3   (OFFSET_B2 + K_HIDDEN)
-#define OFFSET_B3   (OFFSET_W3 + K_HIDDEN * K_OUT)
-
-kernel void grid_mlp_infer(device const float* params  [[buffer(0)]],
-                           device       float* output  [[buffer(1)]],
-                           uint2        gid            [[thread_position_in_grid]]) {
+kernel void grid_mlp_infer(device   const       float*          params  [[buffer(0)]],
+                           device               float*          output  [[buffer(1)]],
+                                    constant    StepConstants&  consts  [[buffer(2)]],
+                                                uint2           gid     [[thread_position_in_grid]]) {
     if (gid.x >= OUT_W || gid.y >= OUT_H) return;
 
     int x = int(gid.x);
@@ -62,7 +54,7 @@ kernel void grid_mlp_infer(device const float* params  [[buffer(0)]],
     uint  c2[4];
     float features[GRID_F_TOTAL];
     bilinear_sample(params            , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features);
-    bilinear_sample(params + OFFSET_G2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1);
+    bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1);
 
     // ========
     // Forward
@@ -73,9 +65,9 @@ kernel void grid_mlp_infer(device const float* params  [[buffer(0)]],
     float hid2[K_HIDDEN];
     float pred[K_OUT];
     mlp_forward(params,
-                OFFSET_W1, OFFSET_B1,
-                OFFSET_W2, OFFSET_B2,
-                OFFSET_W3, OFFSET_B3,
+                consts.offsetW1, consts.offsetB1,
+                consts.offsetW2, consts.offsetB2,
+                consts.offsetW3, consts.offsetB3,
                 GRID_F_TOTAL, K_HIDDEN, K_OUT,
                 features,
                 pre1, hid1, pre2, hid2, pred);

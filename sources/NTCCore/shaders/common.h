@@ -5,6 +5,19 @@ using namespace metal;
 
 constant int SCALE = 1 << 24;
 
+struct StepConstants {
+    uint kBatch;
+    uint offsetG1;
+    uint offsetG2;
+    uint offsetW1;
+    uint offsetB1;
+    uint offsetW2;
+    uint offsetB2;
+    uint offsetW3;
+    uint offsetB3;
+    uint total;
+};
+
 // a cheap piecewise approximation of GELU
 inline float hard_gelu(float x) {
     return 0.5f * x * (1.0f + clamp(x * 0.5f, -1.0f, 1.0f));
