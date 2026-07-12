@@ -4,3 +4,4 @@ misc/
 .build/
 .swiftpm/
 Package.resolved
+*.png
