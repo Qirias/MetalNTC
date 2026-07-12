@@ -16,6 +16,11 @@ struct StepConstants {
     uint offsetW3;
     uint offsetB3;
     uint total;
+    uint bitsPerGrid[2];
+    float qPerGrid[2];
+    float loPerGrid[2];
+    float hiPerGrid[2];
+    uint adamOffset; // for fine-tune training after fake quantization
 };
 
 // a cheap piecewise approximation of GELU
@@ -43,25 +48,44 @@ inline void atomic_add_fixed(device atomic_int* slot, float val) {
     atomic_fetch_add_explicit(slot, int(rint(scaled)), memory_order_relaxed);
 }
 
+inline float hash01(uint seed, uint corner, uint i) {
+    uint x = seed * 1664525u + corner * 1013904223u + i * 2654435761u;
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return float(x) * (1.0f / 4294967296.0f);  // [0, 1)
+}
+
 inline void bilinear_sample(device const float* grid,
                             uint W, uint F,
                             int ix0, int iy0, float fx, float fy,
                             thread float* w,
                             thread uint*  c,
-                            thread float* features) {
+                            thread float* features,
+                            float q,
+                            uint  seed) {
     w[0] = (1.0f - fx) * (1.0f - fy);  // w00
     w[1] =         fx  * (1.0f - fy);  // w01
     w[2] = (1.0f - fx) *         fy;   // w10
     w[3] =         fx  *         fy;   // w11
-
+    
     c[0] = (uint(iy0)     * W + uint(ix0))     * F;
     c[1] = (uint(iy0)     * W + uint(ix0 + 1)) * F;
     c[2] = (uint(iy0 + 1) * W + uint(ix0))     * F;
     c[3] = (uint(iy0 + 1) * W + uint(ix0 + 1)) * F;
-
-    for (uint i = 0; i < F; i++) {
-        features[i] = w[0]*grid[c[0]+i] + w[1]*grid[c[1]+i]
-                    + w[2]*grid[c[2]+i] + w[3]*grid[c[3]+i];
+    
+    for (uint feat = 0; feat < F; feat++) {
+        float acc = 0;
+        for (uint corner = 0; corner < 4; corner++) {
+            float g = grid[c[corner] + feat];
+            if (q != 0.0f) {
+                g += q * (hash01(seed, corner, feat) - 0.5f); // [-q/2, q/2)
+            }
+            acc += w[corner] * g;
+        }
+        features[feat] = acc;
     }
 }
 

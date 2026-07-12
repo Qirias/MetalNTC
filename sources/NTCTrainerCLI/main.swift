@@ -22,6 +22,23 @@ let K_BATCH = 1024
 let SRC_W = 4096
 let SRC_H = 4096
 
+let BITS_G1: UInt32 = 8
+let BITS_G2: UInt32 = 8
+
+func fake_quant(bits: UInt32) -> (q: Float, lo: Float, hi: Float) {
+    if bits == 0 {
+        return (0, 0, 0)
+    }
+    let N = Float(1 << bits)
+    let q = 1.0 / N
+    let lo = -(N - 1) / 2 * q
+    let hi =  N / 2 * q
+    return (q, lo, hi)
+}
+
+let (Q_G1, LO_G1, HI_G1) = fake_quant(bits: BITS_G1)
+let (Q_G2, LO_G2, HI_G2) = fake_quant(bits: BITS_G2)
+
 let OFFSET_G1   = 0
 let OFFSET_G2   = OFFSET_G1 + GRID1_TOTAL
 let OFFSET_W1   = OFFSET_G2 + GRID2_TOTAL
@@ -81,33 +98,41 @@ let adamConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<AdamConstants>
 let adamConstsPtr = adamConstsBuffer.contents().bindMemory(to: AdamConstants.self, capacity: 1)
 
 struct StepConstants {
-    var kBatch:   UInt32
-    var offsetG1: UInt32
-    var offsetG2: UInt32
-    var offsetW1: UInt32
-    var offsetB1: UInt32
-    var offsetW2: UInt32
-    var offsetB2: UInt32
-    var offsetW3: UInt32
-    var offsetB3: UInt32
-    var total:    UInt32
+    var kBatch:         UInt32
+    var offsetG1:       UInt32
+    var offsetG2:       UInt32
+    var offsetW1:       UInt32
+    var offsetB1:       UInt32
+    var offsetW2:       UInt32
+    var offsetB2:       UInt32
+    var offsetW3:       UInt32
+    var offsetB3:       UInt32
+    var total:          UInt32
+    var bitsPerGrid:    (UInt32, UInt32)
+    var qPerGrid:       (Float,  Float)
+    var loPerGrid:      (Float,  Float)
+    var hiPerGrid:      (Float,  Float)
+    var adamOffset:     UInt32 // for fine-tune training after fake quantization
 }
 
 let stepConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<StepConstants>.stride,
                                              options: .storageModeShared)!
 let stepConstsPtr = stepConstsBuffer.contents().bindMemory(to: StepConstants.self, capacity: 1)
-stepConstsPtr.pointee = StepConstants(
-    kBatch:   UInt32(K_BATCH),
-    offsetG1: UInt32(OFFSET_G1),
-    offsetG2: UInt32(OFFSET_G2),
-    offsetW1: UInt32(OFFSET_W1),
-    offsetB1: UInt32(OFFSET_B1),
-    offsetW2: UInt32(OFFSET_W2),
-    offsetB2: UInt32(OFFSET_B2),
-    offsetW3: UInt32(OFFSET_W3),
-    offsetB3: UInt32(OFFSET_B3),
-    total:    UInt32(TOTAL)
-)
+stepConstsPtr.pointee = StepConstants(kBatch:         UInt32(K_BATCH),
+                                      offsetG1:       UInt32(OFFSET_G1),
+                                      offsetG2:       UInt32(OFFSET_G2),
+                                      offsetW1:       UInt32(OFFSET_W1),
+                                      offsetB1:       UInt32(OFFSET_B1),
+                                      offsetW2:       UInt32(OFFSET_W2),
+                                      offsetB2:       UInt32(OFFSET_B2),
+                                      offsetW3:       UInt32(OFFSET_W3),
+                                      offsetB3:       UInt32(OFFSET_B3),
+                                      total:          UInt32(TOTAL),
+                                      bitsPerGrid:    (0, 0),
+                                      qPerGrid:       (Q_G1,    Q_G2),
+                                      loPerGrid:      (LO_G1,   LO_G2),
+                                      hiPerGrid:      (HI_G1,   HI_G2),
+                                      adamOffset:     0)
 
 let setDesc = MTLResidencySetDescriptor()
 setDesc.label = "grid_mlp_train.residency"
@@ -176,7 +201,7 @@ for i in TOTAL..<(TOTAL * 2)    { paramsFloats[i] = 0 }
 let event = ctx.device.makeSharedEvent()!
 var signalValue: UInt64 = 0
 
-let nSteps = 10000
+let nSteps = 5000
 let logEvery = 100
 var t: UInt32 = 0
 let BETA1: Float = 0.9
@@ -234,6 +259,76 @@ for step in 0..<nSteps {
 
 event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 
+// in a later stage we will first pack to uint8_t (using Q_G1 and Q_G2) in the .ntc file and then
+// unpack it. The MLP has to be fine tuned with the loss of this procedure, so for now we simulate it
+// by doing both operations here
+if Q_G1 > 0 {
+    for i in OFFSET_G1..<OFFSET_G2 {
+        paramsFloats[i] = (paramsFloats[i] / Q_G1).rounded() * Q_G1
+    }
+}
+if Q_G2 > 0 {
+    for i in OFFSET_G2..<OFFSET_W1 {
+        paramsFloats[i] = (paramsFloats[i] / Q_G2).rounded() * Q_G2
+    }
+}
+
+stepConstsPtr.pointee.adamOffset = UInt32(OFFSET_W1)
+
+let nFineTune = (BITS_G1 == 0 && BITS_G2 == 0) ? 0 : nSteps / 20 // 5% fine tuning as in the nvidia paper
+let mlpSlots = TOTAL - OFFSET_W1
+
+for step in 0..<nFineTune {
+    event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
+
+    for s in 0..<K_BATCH {
+        let base = s * SAMPLE_STRIDE
+        samplesFloats[base + SAMPLE_Y] = Float(Int.random(in: 0..<SRC_H))
+        samplesFloats[base + SAMPLE_X] = Float(Int.random(in: 0..<SRC_W))
+    }
+
+    t += 1
+    let bc1 = 1.0 - powf(BETA1, Float(t))
+    let bc2 = 1.0 - powf(BETA2, Float(t))
+    adamConstsPtr.pointee = AdamConstants(lr: LR, bc1: bc1, bc2: bc2)
+
+    let cmd = ctx.device.makeCommandBuffer()!
+    cmd.beginCommandBuffer(allocator: ctx.allocator)
+
+    let trainEnc = cmd.makeComputeCommandEncoder()!
+    trainEnc.setComputePipelineState(trainPso)
+    trainEnc.setArgumentTable(trainArgTable)
+    let tgSize = 256
+    let trainTgx = (K_BATCH + tgSize - 1) / tgSize
+    trainEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: trainTgx, height: 1, depth: 1),
+                                  threadsPerThreadgroup: MTLSize(width: tgSize,   height: 1, depth: 1))
+    trainEnc.endEncoding()
+
+    let adamEnc = cmd.makeComputeCommandEncoder()!
+    adamEnc.setComputePipelineState(adamPso)
+    adamEnc.setArgumentTable(adamArgTable)
+    let adamTgx = (mlpSlots + tgSize - 1) / tgSize
+    adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: adamTgx, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: tgSize,  height: 1, depth: 1))
+    adamEnc.endEncoding()
+
+    cmd.endCommandBuffer()
+    ctx.queue.commit([cmd])
+    signalValue += 1
+    ctx.queue.signalEvent(event, value: signalValue)
+
+    if step % logEvery == 0 {
+        event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
+        var sumLoss: Float = 0
+        for s in 0..<K_BATCH {
+            sumLoss += samplesFloats[s * SAMPLE_STRIDE + SAMPLE_LOSS]
+        }
+        print("fine-tune step \(step)\tmean loss = \(sumLoss / Float(K_BATCH))")
+    }
+}
+
+event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
+
 let inferCmd = ctx.device.makeCommandBuffer()!
 inferCmd.beginCommandBuffer(allocator: ctx.allocator)
 
@@ -256,6 +351,15 @@ let pixelCount = SRC_H * SRC_W * K_OUT
 let outPtr = outputBuffer.contents().bindMemory(to: Float.self, capacity: pixelCount)
 let outPixels = Array(UnsafeBufferPointer(start: outPtr, count: pixelCount))
 let outImg = LoadedImage(pixels: outPixels, height: SRC_H, width: SRC_W, channels: K_OUT)
+
+//var mse: Double = 0
+//for i in 0..<pixelCount {
+//    let d = Double(outPixels[i] - img.pixels[i])
+//    mse += d * d
+//}
+//mse /= Double(pixelCount)
+//let psnr = 10.0 * log10(1.0 / mse)
+//print(String(format: "infer MSE = %.6e   PSNR = %.2f dB", mse, psnr))
 
 let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
 let outURL = outDir.appendingPathComponent("grid_mlp_color.png")

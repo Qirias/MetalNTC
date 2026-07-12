@@ -53,8 +53,9 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
     uint  c1[4];
     uint  c2[4];
     float features[GRID_F_TOTAL];
-    bilinear_sample(params            , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features);
-    bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1);
+
+    bilinear_sample(params                  , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features          , 0.0, gid.x);
+    bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1, 0.0, gid.x);
 
     // ========
     // Forward
