@@ -20,6 +20,9 @@ using namespace metal;
 #define SRC_W 4096
 #define SRC_H 4096
 
+#define F_IN      (GRID_F_TOTAL + PE_DIM)
+#define POS_SCALE (float(SRC_W) / 8.0f)
+
 #define SAMPLE_X      0
 #define SAMPLE_Y      1
 #define SAMPLE_LOSS   2
@@ -66,9 +69,13 @@ kernel void grid_mlp_train(device               float*          params  [[buffer
     float w2[4];
     uint  c1[4];
     uint  c2[4];
-    float features[GRID_F_TOTAL];
+    float features[F_IN];
     bilinear_sample(params                  , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features          , consts.qPerGrid[0], gid);
     bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1, consts.qPerGrid[1], gid);
+
+    float2 uv   = float2(float(x) / float(SRC_W - 1), float(y) / float(SRC_H - 1));
+    float2 posf = uv * POS_SCALE;
+    pe_encode(posf, features + GRID_F_TOTAL);
     
     // ========
     // Forward
@@ -82,7 +89,7 @@ kernel void grid_mlp_train(device               float*          params  [[buffer
                 consts.offsetW1, consts.offsetB1,
                 consts.offsetW2, consts.offsetB2,
                 consts.offsetW3, consts.offsetB3,
-                GRID_F_TOTAL, K_HIDDEN, K_OUT,
+                F_IN, K_HIDDEN, K_OUT,
                 features,
                 pre1, hid1, pre2, hid2, pred);
 
@@ -147,8 +154,8 @@ kernel void grid_mlp_train(device               float*          params  [[buffer
     }
 
     // Linear1
-    float d_feats[GRID_F_TOTAL];
-    for (uint i = 0; i < GRID_F_TOTAL; i++) {
+    float d_feats[F_IN];
+    for (uint i = 0; i < F_IN; i++) {
         d_feats[i] = 0;
     }
 
@@ -156,20 +163,19 @@ kernel void grid_mlp_train(device               float*          params  [[buffer
         atomic_add_fixed(&grads[consts.offsetB1 + h], d_pre1[h]);
     }
 
-    for (uint i = 0; i < GRID_F_TOTAL; i++) {
+    for (uint i = 0; i < F_IN; i++) {
         for (uint h = 0; h < K_HIDDEN; h++) {
             atomic_add_fixed(&grads[consts.offsetW1 + i * K_HIDDEN + h], d_pre1[h] * features[i]);
             d_feats[i] += params[consts.offsetW1 + i * K_HIDDEN + h] * d_pre1[h];
         }
     }
 
-    // bilinear
     for (uint i = 0; i < GRID_F1; i++) {
         for (uint corner = 0; corner < 4; corner++) {
             atomic_add_fixed(&grads[c1[corner] + i], w1[corner] * d_feats[i]);
         }
     }
-    
+
     for (uint i = 0; i < GRID_F2; i++) {
         for (uint corner = 0; corner < 4; corner++) {
             atomic_add_fixed(&grads[consts.offsetG2 + c2[corner] + i], w2[corner] * d_feats[GRID_F1 + i]);

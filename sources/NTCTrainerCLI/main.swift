@@ -15,9 +15,13 @@ let GRID2_TOTAL = GRID_H2 * GRID_W2 * GRID_F2
 
 let GRID_F_TOTAL = GRID_F1 + GRID_F2
 
+let PE_WAVES = 3
+let PE_DIM   = 4 * PE_WAVES
+let F_IN     = GRID_F_TOTAL + PE_DIM
+
 let K_HIDDEN = 64
 let K_OUT = 3
-let K_BATCH = 1024
+let K_BATCH = 4096
 
 let SRC_W = 4096
 let SRC_H = 4096
@@ -42,7 +46,7 @@ let (Q_G2, LO_G2, HI_G2) = fake_quant(bits: BITS_G2)
 let OFFSET_G1   = 0
 let OFFSET_G2   = OFFSET_G1 + GRID1_TOTAL
 let OFFSET_W1   = OFFSET_G2 + GRID2_TOTAL
-let OFFSET_B1   = OFFSET_W1 + GRID_F_TOTAL * K_HIDDEN
+let OFFSET_B1   = OFFSET_W1 + F_IN * K_HIDDEN
 let OFFSET_W2   = OFFSET_B1 + K_HIDDEN
 let OFFSET_B2   = OFFSET_W2 + K_HIDDEN * K_HIDDEN
 let OFFSET_W3   = OFFSET_B2 + K_HIDDEN
@@ -186,7 +190,7 @@ inferArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
 // a^2 = 6 / fan_in
 // so a = sqrt(6/fan_in)
 
-let w1Bound = sqrtf(6.0 / Float(GRID_F_TOTAL))
+let w1Bound = sqrtf(6.0 / Float(F_IN))
 let w2Bound = sqrtf(6.0 / Float(K_HIDDEN))
 
 for i in OFFSET_G1..<OFFSET_W1  { paramsFloats[i] = Float.random(in: -0.05...0.05) }
@@ -352,14 +356,14 @@ let outPtr = outputBuffer.contents().bindMemory(to: Float.self, capacity: pixelC
 let outPixels = Array(UnsafeBufferPointer(start: outPtr, count: pixelCount))
 let outImg = LoadedImage(pixels: outPixels, height: SRC_H, width: SRC_W, channels: K_OUT)
 
-//var mse: Double = 0
-//for i in 0..<pixelCount {
-//    let d = Double(outPixels[i] - img.pixels[i])
-//    mse += d * d
-//}
-//mse /= Double(pixelCount)
-//let psnr = 10.0 * log10(1.0 / mse)
-//print(String(format: "infer MSE = %.6e   PSNR = %.2f dB", mse, psnr))
+var mse: Double = 0
+for i in 0..<pixelCount {
+    let d = Double(outPixels[i] - img.pixels[i])
+    mse += d * d
+}
+mse /= Double(pixelCount)
+let psnr = 10.0 * log10(1.0 / mse)
+print(String(format: "infer MSE = %.6e   PSNR = %.2f dB", mse, psnr))
 
 let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
 let outURL = outDir.appendingPathComponent("grid_mlp_color.png")

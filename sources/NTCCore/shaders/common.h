@@ -5,6 +5,9 @@ using namespace metal;
 
 constant int SCALE = 1 << 24;
 
+#define PE_WAVES 3
+#define PE_DIM   (4 * PE_WAVES)
+
 struct StepConstants {
     uint kBatch;
     uint offsetG1;
@@ -86,6 +89,16 @@ inline void bilinear_sample(device const float* grid,
             acc += w[corner] * g;
         }
         features[feat] = acc;
+    }
+}
+
+inline void pe_encode(float2 posf, thread float* pe) {
+    for (uint i = 0; i < PE_WAVES; i++) {
+        pe[4*i + 0] = fract(posf.x)         * 2.0 - 1.0; // saw x
+        pe[4*i + 1] = fract(posf.y)         * 2.0 - 1.0; // saw y
+        pe[4*i + 2] = fract(posf.x + 0.25)  * 2.0 - 1.0; // saw shift x
+        pe[4*i + 3] = fract(posf.y + 0.25)  * 2.0 - 1.0; // saw shift y
+        posf *= 2.0;
     }
 }
 

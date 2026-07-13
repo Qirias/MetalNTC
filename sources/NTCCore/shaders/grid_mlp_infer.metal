@@ -20,6 +20,9 @@ using namespace metal;
 #define OUT_W 4096
 #define OUT_H 4096
 
+#define F_IN      (GRID_F_TOTAL + PE_DIM)
+#define POS_SCALE (float(SRC_W) / 8.0f)
+
 kernel void grid_mlp_infer(device   const       float*          params  [[buffer(0)]],
                            device               float*          output  [[buffer(1)]],
                                     constant    StepConstants&  consts  [[buffer(2)]],
@@ -52,11 +55,15 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
     float w2[4];
     uint  c1[4];
     uint  c2[4];
-    float features[GRID_F_TOTAL];
+    float features[F_IN];
 
     bilinear_sample(params                  , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features          , 0.0, gid.x);
     bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1, 0.0, gid.x);
 
+    float2 uv   = float2(float(x) / float(OUT_W - 1), float(y) / float(OUT_H - 1));
+    float2 posf = uv * POS_SCALE;
+    pe_encode(posf, features + GRID_F_TOTAL);
+    
     // ========
     // Forward
     // ========
@@ -69,7 +76,7 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
                 consts.offsetW1, consts.offsetB1,
                 consts.offsetW2, consts.offsetB2,
                 consts.offsetW3, consts.offsetB3,
-                GRID_F_TOTAL, K_HIDDEN, K_OUT,
+                F_IN, K_HIDDEN, K_OUT,
                 features,
                 pre1, hid1, pre2, hid2, pred);
 
