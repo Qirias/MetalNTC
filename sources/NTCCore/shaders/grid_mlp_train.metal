@@ -25,8 +25,9 @@ using namespace metal;
 
 #define SAMPLE_X      0
 #define SAMPLE_Y      1
-#define SAMPLE_LOSS   2
-#define SAMPLE_STRIDE 3
+#define SAMPLE_LOD    2
+#define SAMPLE_LOSS   3
+#define SAMPLE_STRIDE 4
 
 kernel void grid_mlp_train(device               float*                          params  [[buffer(0)]],
                            device               float*                          samples [[buffer(1)]],
@@ -40,24 +41,27 @@ kernel void grid_mlp_train(device               float*                          
     uint sample_base = gid * SAMPLE_STRIDE;
     int x = int(samples[sample_base + SAMPLE_X]);
     int y = int(samples[sample_base + SAMPLE_Y]);
+    uint lod = uint(samples[sample_base + SAMPLE_LOD]);
+    uint srcWL = max(uint(SRC_W) >> lod, 1u);
+    uint srcHL = max(uint(SRC_H) >> lod, 1u);
 
-    float4 gt4 = pyramid.read(uint2(uint(x), uint(y)), 0);
+    float4 gt4 = pyramid.read(uint2(uint(x), uint(y)), lod);
     float gt[K_OUT];
     gt[0] = gt4.r;
     gt[1] = gt4.g;
     gt[2] = gt4.b;
 
-    float ix1 = float(x) * float(GRID_W1 - 1) / float(SRC_W - 1);
-    float iy1 = float(y) * float(GRID_H1 - 1) / float(SRC_H - 1);
+    float ix1 = float(x) * float(GRID_W1 - 1) / float(srcWL - 1);
+    float iy1 = float(y) * float(GRID_H1 - 1) / float(srcHL - 1);
     int iy0_1 = int(floor(iy1));
     int ix0_1 = int(floor(ix1));
     iy0_1 = min(iy0_1, GRID_H1 - 2);
     ix0_1 = min(ix0_1, GRID_W1 - 2);
     float fy1 = iy1 - float(iy0_1);
     float fx1 = ix1 - float(ix0_1);
-    
-    float ix2 = float(x) * float(GRID_W2 - 1) / float(SRC_W - 1);
-    float iy2 = float(y) * float(GRID_H2 - 1) / float(SRC_H - 1);
+
+    float ix2 = float(x) * float(GRID_W2 - 1) / float(srcWL - 1);
+    float iy2 = float(y) * float(GRID_H2 - 1) / float(srcHL - 1);
     int iy0_2 = int(floor(iy2));
     int ix0_2 = int(floor(ix2));
     iy0_2 = min(iy0_2, GRID_H2 - 2);
@@ -73,7 +77,7 @@ kernel void grid_mlp_train(device               float*                          
     bilinear_sample(params                  , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features          , consts.qPerGrid[0], gid);
     bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1, consts.qPerGrid[1], gid);
 
-    float2 uv   = float2(float(x) / float(SRC_W - 1), float(y) / float(SRC_H - 1));
+    float2 uv   = float2(float(x) / float(srcWL - 1), float(y) / float(srcHL - 1));
     float2 posf = uv * POS_SCALE;
     pe_encode(posf, features + GRID_F_TOTAL);
     

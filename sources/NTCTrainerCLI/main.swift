@@ -55,8 +55,9 @@ let TOTAL       = OFFSET_B3 + K_OUT
 
 let SAMPLE_X      = 0
 let SAMPLE_Y      = 1
-let SAMPLE_LOSS   = 2
-let SAMPLE_STRIDE = 3
+let SAMPLE_LOD    = 2
+let SAMPLE_LOSS   = 3
+let SAMPLE_STRIDE = 4
 
 
 let srcURL = URL(fileURLWithPath: "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/ManholeCover010_4K-PNG_Color.png")
@@ -232,20 +233,25 @@ ctx.queue.commit([pyramidCmd])
 signalValue += 1
 ctx.queue.signalEvent(event, value: signalValue)
 
-let nSteps = 5000
+let nSteps = 10000
 let logEvery = 100
 var t: UInt32 = 0
 let BETA1: Float = 0.9
 let BETA2: Float = 0.999
 let LR: Float = 1e-3
+let lodMax= pyramidBuilder.mipCount - 2
 
 for step in 0..<nSteps {
     event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
     for s in 0..<K_BATCH {
         let base = s * SAMPLE_STRIDE
-        samplesFloats[base + SAMPLE_Y] = Float(Int.random(in: 0..<SRC_H))
-        samplesFloats[base + SAMPLE_X] = Float(Int.random(in: 0..<SRC_W))
+        let lod = Int.random(in: 0..<lodMax)
+        let wL  = SRC_W >> lod
+        let hL  = SRC_H >> lod
+        samplesFloats[base + SAMPLE_X]   = Float(Int.random(in: 0..<wL))
+        samplesFloats[base + SAMPLE_Y]   = Float(Int.random(in: 0..<hL))
+        samplesFloats[base + SAMPLE_LOD] = Float(lod)
     }
 
     t += 1
@@ -314,8 +320,12 @@ for step in 0..<nFineTune {
 
     for s in 0..<K_BATCH {
         let base = s * SAMPLE_STRIDE
-        samplesFloats[base + SAMPLE_Y] = Float(Int.random(in: 0..<SRC_H))
-        samplesFloats[base + SAMPLE_X] = Float(Int.random(in: 0..<SRC_W))
+        let lod = Int.random(in: 0..<lodMax)
+        let wL  = SRC_W >> lod
+        let hL  = SRC_H >> lod
+        samplesFloats[base + SAMPLE_X]   = Float(Int.random(in: 0..<wL))
+        samplesFloats[base + SAMPLE_Y]   = Float(Int.random(in: 0..<hL))
+        samplesFloats[base + SAMPLE_LOD] = Float(lod)
     }
 
     t += 1
