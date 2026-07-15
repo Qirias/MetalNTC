@@ -28,11 +28,11 @@ using namespace metal;
 #define SAMPLE_LOSS   2
 #define SAMPLE_STRIDE 3
 
-kernel void grid_mlp_train(device               float*          params  [[buffer(0)]],
-                           device               float*          samples [[buffer(1)]],
-                           device   const       float*          source  [[buffer(2)]],
-                                    constant    StepConstants&  consts  [[buffer(3)]],
-                                                uint            gid     [[thread_position_in_grid]]) {
+kernel void grid_mlp_train(device               float*                          params  [[buffer(0)]],
+                           device               float*                          samples [[buffer(1)]],
+                                    constant    StepConstants&                  consts  [[buffer(2)]],
+                                                texture2d<float, access::read>  pyramid [[texture(0)]],
+                                                uint                            gid     [[thread_position_in_grid]]) {
     if (gid >= consts.kBatch) return;
 
     device atomic_int* grads = reinterpret_cast<device atomic_int*>(params + consts.total);
@@ -41,11 +41,11 @@ kernel void grid_mlp_train(device               float*          params  [[buffer
     int x = int(samples[sample_base + SAMPLE_X]);
     int y = int(samples[sample_base + SAMPLE_Y]);
 
-    uint src_base = (uint(y) * SRC_W + uint(x)) * K_OUT;
+    float4 gt4 = pyramid.read(uint2(uint(x), uint(y)), 0);
     float gt[K_OUT];
-    for (uint ch = 0; ch < K_OUT; ch++) {
-        gt[ch] = source[src_base + ch];
-    }
+    gt[0] = gt4.r;
+    gt[1] = gt4.g;
+    gt[2] = gt4.b;
 
     float ix1 = float(x) * float(GRID_W1 - 1) / float(SRC_W - 1);
     float iy1 = float(y) * float(GRID_H1 - 1) / float(SRC_H - 1);

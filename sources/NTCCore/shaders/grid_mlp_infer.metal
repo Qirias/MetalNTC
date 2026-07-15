@@ -21,7 +21,7 @@ using namespace metal;
 #define OUT_H 4096
 
 #define F_IN      (GRID_F_TOTAL + PE_DIM)
-#define POS_SCALE (float(SRC_W) / 8.0f)
+#define POS_SCALE (float(OUT_W) / 8.0f)
 
 kernel void grid_mlp_infer(device   const       float*          params  [[buffer(0)]],
                            device               float*          output  [[buffer(1)]],

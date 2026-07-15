@@ -8,6 +8,12 @@ constant int SCALE = 1 << 24;
 #define PE_WAVES 3
 #define PE_DIM   (4 * PE_WAVES)
 
+
+struct SPDConstants {
+    uint numWorkgroups;
+    uint mipCount;
+};
+
 struct StepConstants {
     uint kBatch;
     uint offsetG1;
@@ -101,7 +107,7 @@ inline void pe_encode(float2 posf, thread float* pe) {
         posf *= 2.0;
     }
 }
-
+    
 inline void mlp_forward(device const float* params,
                         uint off_w1, uint off_b1,
                         uint off_w2, uint off_b2,

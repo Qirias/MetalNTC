@@ -75,14 +75,30 @@ let samplesBuffer = ctx.device.makeBuffer(length: K_BATCH * SAMPLE_STRIDE * Memo
                                           options: .storageModeShared)!
 let samplesFloats = samplesBuffer.contents().bindMemory(to: Float.self, capacity: K_BATCH * SAMPLE_STRIDE)
 
-let sourceBuffer = ctx.device.makeBuffer(length: img.pixels.count * MemoryLayout<Float>.stride,
-                                         options: .storageModeShared)!
-
 let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * K_OUT * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
-img.pixels.withUnsafeBufferPointer { buf in
-    sourceBuffer.contents().copyMemory(from: buf.baseAddress!, byteCount: buf.count * MemoryLayout<Float>.stride)
+
+let sourceTexDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float, width: SRC_W, height: SRC_H, mipmapped: false)
+sourceTexDesc.usage       = [.shaderRead]
+sourceTexDesc.storageMode = .shared
+let sourceTexture = ctx.device.makeTexture(descriptor: sourceTexDesc)!
+
+var rgbaPixels = [SIMD4<Float>](repeating: .zero, count: SRC_H * SRC_W)
+for i in 0..<(SRC_H * SRC_W) {
+    rgbaPixels[i] = SIMD4<Float>(img.pixels[i * K_OUT + 0],
+                                 img.pixels[i * K_OUT + 1],
+                                 img.pixels[i * K_OUT + 2],
+                                 0)
 }
+
+rgbaPixels.withUnsafeBufferPointer { buf in
+    sourceTexture.replace(region: MTLRegionMake2D(0, 0, SRC_W, SRC_H),
+                          mipmapLevel: 0,
+                          withBytes: buf.baseAddress!,
+                          bytesPerRow: SRC_W * MemoryLayout<SIMD4<Float>>.stride)
+}
+
+let pyramidBuilder = try MipPyramidBuilder(ctx: ctx, srcW: SRC_W, srcH: SRC_H, sourceTexture: sourceTexture)
 
 let mBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                     options: .storageModeShared)!
@@ -140,26 +156,29 @@ stepConstsPtr.pointee = StepConstants(kBatch:         UInt32(K_BATCH),
 
 let setDesc = MTLResidencySetDescriptor()
 setDesc.label = "grid_mlp_train.residency"
-setDesc.initialCapacity = 7
+setDesc.initialCapacity = 11
 let residencySet = try ctx.device.makeResidencySet(descriptor: setDesc)
 residencySet.addAllocation(paramsBuffer)
 residencySet.addAllocation(samplesBuffer)
-residencySet.addAllocation(sourceBuffer)
 residencySet.addAllocation(stepConstsBuffer)
 residencySet.addAllocation(outputBuffer)
 residencySet.addAllocation(mBuffer)
 residencySet.addAllocation(vBuffer)
 residencySet.addAllocation(adamConstsBuffer)
+for alloc in pyramidBuilder.residencyAllocations {
+    residencySet.addAllocation(alloc)
+}
 residencySet.commit()
 ctx.queue.addResidencySet(residencySet)
 
 let trainArgDesc = MTL4ArgumentTableDescriptor()
-trainArgDesc.maxBufferBindCount = 4
+trainArgDesc.maxBufferBindCount  = 4
+trainArgDesc.maxTextureBindCount = 1
 let trainArgTable = try ctx.device.makeArgumentTable(descriptor: trainArgDesc)
 trainArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
 trainArgTable.setAddress(samplesBuffer.gpuAddress,    index: 1)
-trainArgTable.setAddress(sourceBuffer.gpuAddress,     index: 2)
-trainArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 3)
+trainArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
+trainArgTable.setTexture(pyramidBuilder.pyramidTexture.gpuResourceID, index: 0)
 
 let adamArgDesc = MTL4ArgumentTableDescriptor()
 adamArgDesc.maxBufferBindCount = 5
@@ -204,6 +223,14 @@ for i in TOTAL..<(TOTAL * 2)    { paramsFloats[i] = 0 }
 
 let event = ctx.device.makeSharedEvent()!
 var signalValue: UInt64 = 0
+
+let pyramidCmd = ctx.device.makeCommandBuffer()!
+pyramidCmd.beginCommandBuffer(allocator: ctx.allocator)
+pyramidBuilder.encode(into: pyramidCmd)
+pyramidCmd.endCommandBuffer()
+ctx.queue.commit([pyramidCmd])
+signalValue += 1
+ctx.queue.signalEvent(event, value: signalValue)
 
 let nSteps = 5000
 let logEvery = 100
