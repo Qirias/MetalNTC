@@ -30,6 +30,7 @@ struct StepConstants {
     float loPerGrid[2];
     float hiPerGrid[2];
     uint adamOffset; // for fine-tune training after fake quantization
+    uint inferLod;
 };
 
 // a cheap piecewise approximation of GELU

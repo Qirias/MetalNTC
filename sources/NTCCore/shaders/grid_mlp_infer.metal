@@ -27,14 +27,20 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
                            device               float*          output  [[buffer(1)]],
                                     constant    StepConstants&  consts  [[buffer(2)]],
                                                 uint2           gid     [[thread_position_in_grid]]) {
-    if (gid.x >= OUT_W || gid.y >= OUT_H) return;
+    uint lod = consts.inferLod;
+    uint outWL = max(uint(OUT_W) >> lod, 1u);
+    uint outHL = max(uint(OUT_H) >> lod, 1u);
+    if (gid.x >= outWL || gid.y >= outHL) return;
 
     int x = int(gid.x);
     int y = int(gid.y);
-    uint out_base = (uint(y) * OUT_W + uint(x)) * K_OUT;
+    uint out_base = (uint(y) * outWL + uint(x)) * K_OUT;
 
-    float ix1 = float(x) * float(GRID_W1 - 1) / float(OUT_W - 1);
-    float iy1 = float(y) * float(GRID_H1 - 1) / float(OUT_H - 1);
+    float denomX = float(max(int(outWL) - 1, 1));
+    float denomY = float(max(int(outHL) - 1, 1));
+
+    float ix1 = float(x) * float(GRID_W1 - 1) / denomX;
+    float iy1 = float(y) * float(GRID_H1 - 1) / denomY;
     int iy0_1 = int(floor(iy1));
     int ix0_1 = int(floor(ix1));
     iy0_1 = min(iy0_1, GRID_H1 - 2);
@@ -42,8 +48,8 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
     float fy1 = iy1 - float(iy0_1);
     float fx1 = ix1 - float(ix0_1);
 
-    float ix2 = float(x) * float(GRID_W2 - 1) / float(OUT_W - 1);
-    float iy2 = float(y) * float(GRID_H2 - 1) / float(OUT_H - 1);
+    float ix2 = float(x) * float(GRID_W2 - 1) / denomX;
+    float iy2 = float(y) * float(GRID_H2 - 1) / denomY;
     int iy0_2 = int(floor(iy2));
     int ix0_2 = int(floor(ix2));
     iy0_2 = min(iy0_2, GRID_H2 - 2);
@@ -60,7 +66,7 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
     bilinear_sample(params                  , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features          , 0.0, gid.x);
     bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1, 0.0, gid.x);
 
-    float2 uv   = float2(float(x) / float(OUT_W - 1), float(y) / float(OUT_H - 1));
+    float2 uv   = float2(float(x) / denomX, float(y) / denomY);
     float2 posf = uv * POS_SCALE;
     pe_encode(posf, features + GRID_F_TOTAL);
     

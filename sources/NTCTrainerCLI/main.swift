@@ -134,6 +134,7 @@ struct StepConstants {
     var loPerGrid:      (Float,  Float)
     var hiPerGrid:      (Float,  Float)
     var adamOffset:     UInt32 // for fine-tune training after fake quantization
+    var inferLod:       UInt32 // LOD level for infer dispatch (0 = full resolution)
 }
 
 let stepConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<StepConstants>.stride,
@@ -153,7 +154,8 @@ stepConstsPtr.pointee = StepConstants(kBatch:         UInt32(K_BATCH),
                                       qPerGrid:       (Q_G1,    Q_G2),
                                       loPerGrid:      (LO_G1,   LO_G2),
                                       hiPerGrid:      (HI_G1,   HI_G2),
-                                      adamOffset:     0)
+                                      adamOffset:     0,
+                                      inferLod:       0)
 
 let setDesc = MTLResidencySetDescriptor()
 setDesc.label = "grid_mlp_train.residency"
@@ -239,7 +241,7 @@ var t: UInt32 = 0
 let BETA1: Float = 0.9
 let BETA2: Float = 0.999
 let LR: Float = 1e-3
-let lodMax= pyramidBuilder.mipCount - 2
+let lodMax = pyramidBuilder.mipCount - 2
 
 for step in 0..<nSteps {
     event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
@@ -370,39 +372,95 @@ for step in 0..<nFineTune {
 
 event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 
-let inferCmd = ctx.device.makeCommandBuffer()!
-inferCmd.beginCommandBuffer(allocator: ctx.allocator)
 
-let inferEnc = inferCmd.makeComputeCommandEncoder()!
-inferEnc.setComputePipelineState(inferPso)
-inferEnc.setArgumentTable(inferArgTable)
-let tgx = SRC_W / 16
-let tgy = SRC_H / 16
-inferEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: tgx, height: tgy, depth: 1),
-                              threadsPerThreadgroup: MTLSize(width: 16,  height: 16, depth: 1))
-inferEnc.endEncoding()
+// infer all mips and write them to a [4096+2048, 4096] texture atlas
+let ATLAS_W = SRC_W + SRC_W / 2
+let ATLAS_H = SRC_H
+var atlas = [Float](repeating: 0, count: ATLAS_W * ATLAS_H * K_OUT)
 
-inferCmd.endCommandBuffer()
-ctx.queue.commit([inferCmd])
-signalValue += 1
-ctx.queue.signalEvent(event, value: signalValue)
-event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
+let outPtr = outputBuffer.contents().bindMemory(to: Float.self,
+                                                capacity: SRC_H * SRC_W * K_OUT)
 
-let pixelCount = SRC_H * SRC_W * K_OUT
-let outPtr = outputBuffer.contents().bindMemory(to: Float.self, capacity: pixelCount)
-let outPixels = Array(UnsafeBufferPointer(start: outPtr, count: pixelCount))
-let outImg = LoadedImage(pixels: outPixels, height: SRC_H, width: SRC_W, channels: K_OUT)
+// pyramid mip texels back to CPU for PSNR
+var pyramidScratch = [SIMD4<Float>](repeating: .zero, count: SRC_H * SRC_W)
 
-var mse: Double = 0
-for i in 0..<pixelCount {
-    let d = Double(outPixels[i] - img.pixels[i])
-    mse += d * d
+for lod in 0..<pyramidBuilder.mipCount {
+    let outWL = max(SRC_W >> lod, 1)
+    let outHL = max(SRC_H >> lod, 1)
+    let pixelCountLod = outWL * outHL * K_OUT
+
+    stepConstsPtr.pointee.inferLod = UInt32(lod)
+
+    let inferCmd = ctx.device.makeCommandBuffer()!
+    inferCmd.beginCommandBuffer(allocator: ctx.allocator)
+
+    let inferEnc = inferCmd.makeComputeCommandEncoder()!
+    inferEnc.setComputePipelineState(inferPso)
+    inferEnc.setArgumentTable(inferArgTable)
+    let tgx = (outWL + 15) / 16
+    let tgy = (outHL + 15) / 16
+    inferEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: tgx, height: tgy, depth: 1),
+                                  threadsPerThreadgroup: MTLSize(width: 16,  height: 16, depth: 1))
+    inferEnc.endEncoding()
+
+    inferCmd.endCommandBuffer()
+    ctx.queue.commit([inferCmd])
+    signalValue += 1
+    ctx.queue.signalEvent(event, value: signalValue)
+    event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
+
+    // read ground-truth mip from the pyramid texture for PSNR
+    let region = MTLRegionMake2D(0, 0, outWL, outHL)
+    pyramidScratch.withUnsafeMutableBufferPointer { buf in
+        pyramidBuilder.pyramidTexture.getBytes(buf.baseAddress!,
+                                               bytesPerRow: outWL * MemoryLayout<SIMD4<Float>>.stride,
+                                               bytesPerImage: outWL * outHL * MemoryLayout<SIMD4<Float>>.stride,
+                                               from: region,
+                                               mipmapLevel: lod,
+                                               slice: 0)
+    }
+
+    var mse: Double = 0
+    for i in 0..<(outWL * outHL) {
+        let gt = pyramidScratch[i]
+        let dr = Double(outPtr[i * K_OUT + 0] - gt.x)
+        let dg = Double(outPtr[i * K_OUT + 1] - gt.y)
+        let db = Double(outPtr[i * K_OUT + 2] - gt.z)
+        mse += dr * dr + dg * dg + db * db
+    }
+    mse /= Double(pixelCountLod)
+    let psnr = 10.0 * log10(1.0 / mse)
+    print(String(format: "LOD %2d  %4dx%-4d  MSE = %.6e   PSNR = %.2f dB",
+                 lod, outWL, outHL, mse, psnr))
+
+    // mip 0 goes on the left, rest of the mips to the right and down
+    let xOff: Int
+    let yOff: Int
+    if lod == 0 {
+        xOff = 0
+        yOff = 0
+    } else {
+        xOff = SRC_W
+        // cumulative height of mips 1 to lod-1
+        var cum = 0
+        for k in 1..<lod {
+            cum += max(SRC_H >> k, 1)
+        }
+        yOff = cum
+    }
+
+    for y in 0..<outHL {
+        for x in 0..<outWL {
+            let srcIdx = (y * outWL + x) * K_OUT
+            let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * K_OUT
+            atlas[dstIdx + 0] = outPtr[srcIdx + 0]
+            atlas[dstIdx + 1] = outPtr[srcIdx + 1]
+            atlas[dstIdx + 2] = outPtr[srcIdx + 2]
+        }
+    }
 }
-mse /= Double(pixelCount)
-let psnr = 10.0 * log10(1.0 / mse)
-print(String(format: "infer MSE = %.6e   PSNR = %.2f dB", mse, psnr))
 
+let atlasImg = LoadedImage(pixels: atlas, height: ATLAS_H, width: ATLAS_W, channels: K_OUT)
 let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
-let outURL = outDir.appendingPathComponent("grid_mlp_color.png")
-try save_image(outImg, to: outURL)
-print("saved infer output to \(outURL.path)")
+let outURL = outDir.appendingPathComponent("grid_mlp_color_lod_atlas.png")
+try save_image(atlasImg, to: outURL)
