@@ -3,13 +3,14 @@
 using namespace metal;
 
 #define K_HIDDEN 64
-#define K_OUT    3
+
+#define K_OUT    6
 
 #define SRC_W 4096
 #define SRC_H 4096
 
 #define F_TOTAL   (2 * F_PER_GRID)
-#define F_IN      (F_TOTAL + PE_DIM)
+#define F_IN      (F_TOTAL + PE_DIM + 1)
 #define POS_SCALE (float(SRC_W) / 8.0f)
 
 #define SAMPLE_X      0
@@ -18,11 +19,11 @@ using namespace metal;
 #define SAMPLE_LOSS   3
 #define SAMPLE_STRIDE 4
 
-kernel void grid_mlp_train(device               float*                          params  [[buffer(0)]],
-                           device               float*                          samples [[buffer(1)]],
-                                    constant    StepConstants&                  consts  [[buffer(2)]],
-                                                texture2d<float, access::read>  pyramid [[texture(0)]],
-                                                uint                            gid     [[thread_position_in_grid]]) {
+kernel void grid_mlp_train(device               float*                                  params  [[buffer(0)]],
+                           device               float*                                  samples [[buffer(1)]],
+                                    constant    StepConstants&                          consts  [[buffer(2)]],
+                                                texture2d_array<float, access::read>    pyramid [[texture(0)]],
+                                                uint                                    gid     [[thread_position_in_grid]]) {
     if (gid >= consts.kBatch) return;
 
     device atomic_int* grads = reinterpret_cast<device atomic_int*>(params + consts.total);
@@ -34,11 +35,16 @@ kernel void grid_mlp_train(device               float*                          
     uint srcWL = max(uint(SRC_W) >> lod, 1u);
     uint srcHL = max(uint(SRC_H) >> lod, 1u);
 
-    float4 gt4 = pyramid.read(uint2(uint(x), uint(y)), lod);
+    float4 gtC = pyramid.read(uint2(uint(x), uint(y)), 0, lod);
+    float4 gtN = pyramid.read(uint2(uint(x), uint(y)), 1, lod);
     float gt[K_OUT];
-    gt[0] = gt4.r;
-    gt[1] = gt4.g;
-    gt[2] = gt4.b;
+    gt[0] = gtC.r;
+    gt[1] = gtC.g;
+    gt[2] = gtC.b;
+    gt[3] = gtN.r;
+    gt[4] = gtN.g;
+    gt[5] = gtN.b;
+    
 
     uint neural_mip = consts.neuralMipForLod[lod];
     
@@ -74,6 +80,8 @@ kernel void grid_mlp_train(device               float*                          
     float2 uv   = float2(float(x) / float(srcWL - 1), float(y) / float(srcHL - 1));
     float2 posf = uv * POS_SCALE;
     pe_encode(posf, features + F_TOTAL);
+
+    features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
     
     // ========
     // Forward

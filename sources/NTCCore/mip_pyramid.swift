@@ -36,11 +36,16 @@ public final class MipPyramidBuilder {
             (w: max(srcW >> i, 1), h: max(srcH >> i, 1))
         }
 
-        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float, width: srcW, height: srcH, mipmapped: true)
-        desc.usage           = [.shaderRead, .shaderWrite]
-        desc.storageMode     = .shared
+        let desc = MTLTextureDescriptor()
+        desc.textureType      = .type2DArray
+        desc.pixelFormat      = .rgba32Float
+        desc.width            = srcW
+        desc.height           = srcH
+        desc.arrayLength      = sourceTexture.arrayLength
         desc.mipmapLevelCount = mipCount
-        self.pyramidTexture  = ctx.device.makeTexture(descriptor: desc)!
+        desc.usage            = [.shaderRead, .shaderWrite]
+        desc.storageMode      = .shared
+        self.pyramidTexture   = ctx.device.makeTexture(descriptor: desc)!
 
         self.pso = try ctx.makeComputePipelineState(function: "downsample_2x2")
 

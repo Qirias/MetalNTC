@@ -16,10 +16,11 @@ let F_TOTAL = 2 * F_PER_GRID
 
 let PE_WAVES = 3
 let PE_DIM   = 4 * PE_WAVES
-let F_IN     = F_TOTAL + PE_DIM
+let F_IN     = F_TOTAL + PE_DIM + 1
 
 let K_HIDDEN = 64
-let K_OUT = 3
+let C_PER_MATERIAL = 3
+let K_OUT = 6
 let K_BATCH = 4096
 
 let SRC_W = 4096
@@ -71,8 +72,13 @@ let SAMPLE_LOD    = 2
 let SAMPLE_LOSS   = 3
 let SAMPLE_STRIDE = 4
 
-let srcURL = URL(fileURLWithPath: "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/ManholeCover010_4K-PNG_Color.png")
-let img = try load_image(at: srcURL, channels: K_OUT)
+let N_MATERIAL_SLICES = 2
+
+let assetDir = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
+let colorURL  = URL(fileURLWithPath: "\(assetDir)/ManholeCover010_4K-PNG_Color.png")
+let normalURL = URL(fileURLWithPath: "\(assetDir)/ManholeCover010_4K-PNG_NormalGL.png")
+let colorImg  = try load_image(at: colorURL,  channels: C_PER_MATERIAL)
+let normalImg = try load_image(at: normalURL, channels: C_PER_MATERIAL)
 
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = try ctx.makeComputePipelineState(function: "grid_mlp_train")
@@ -90,25 +96,44 @@ let samplesFloats = samplesBuffer.contents().bindMemory(to: Float.self, capacity
 let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * K_OUT * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
 
-let sourceTexDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float, width: SRC_W, height: SRC_H, mipmapped: false)
-sourceTexDesc.usage       = [.shaderRead]
-sourceTexDesc.storageMode = .shared
+let sourceTexDesc = MTLTextureDescriptor()
+sourceTexDesc.textureType     = .type2DArray
+sourceTexDesc.pixelFormat     = .rgba32Float
+sourceTexDesc.width           = SRC_W
+sourceTexDesc.height          = SRC_H
+sourceTexDesc.arrayLength     = N_MATERIAL_SLICES
+sourceTexDesc.mipmapLevelCount = 1
+sourceTexDesc.usage           = [.shaderRead]
+sourceTexDesc.storageMode     = .shared
 let sourceTexture = ctx.device.makeTexture(descriptor: sourceTexDesc)!
 
-var rgbaPixels = [SIMD4<Float>](repeating: .zero, count: SRC_H * SRC_W)
-for i in 0..<(SRC_H * SRC_W) {
-    rgbaPixels[i] = SIMD4<Float>(img.pixels[i * K_OUT + 0],
-                                 img.pixels[i * K_OUT + 1],
-                                 img.pixels[i * K_OUT + 2],
-                                 0)
+func packRGBA(_ img: LoadedImage) -> [SIMD4<Float>] {
+    var arr = [SIMD4<Float>](repeating: .zero, count: SRC_H * SRC_W)
+    for i in 0..<(SRC_H * SRC_W) {
+        arr[i] = SIMD4<Float>(img.pixels[i * C_PER_MATERIAL + 0],
+                              img.pixels[i * C_PER_MATERIAL + 1],
+                              img.pixels[i * C_PER_MATERIAL + 2],
+                              0)
+    }
+    return arr
 }
 
-rgbaPixels.withUnsafeBufferPointer { buf in
-    sourceTexture.replace(region: MTLRegionMake2D(0, 0, SRC_W, SRC_H),
-                          mipmapLevel: 0,
-                          withBytes: buf.baseAddress!,
-                          bytesPerRow: SRC_W * MemoryLayout<SIMD4<Float>>.stride)
+let bytesPerRow   = SRC_W * MemoryLayout<SIMD4<Float>>.stride
+let bytesPerImage = SRC_H * bytesPerRow
+
+func uploadSlice(_ img: LoadedImage, into texture: any MTLTexture, slice: Int) {
+    let packed = packRGBA(img)
+    packed.withUnsafeBufferPointer { buf in
+        texture.replace(region: MTLRegionMake2D(0, 0, SRC_W, SRC_H),
+                        mipmapLevel: 0,
+                        slice: slice,
+                        withBytes: buf.baseAddress!,
+                        bytesPerRow: bytesPerRow,
+                        bytesPerImage: bytesPerImage)
+    }
 }
+uploadSlice(colorImg,  into: sourceTexture, slice: 0)
+uploadSlice(normalImg, into: sourceTexture, slice: 1)
 
 let pyramidBuilder = try MipPyramidBuilder(ctx: ctx, srcW: SRC_W, srcH: SRC_H, sourceTexture: sourceTexture)
 
@@ -342,7 +367,7 @@ for step in 0..<nSteps {
 
 event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 
-// in a later stage we will first pack to uint8_t (using Q_G1 and Q_G2) in the .ntc file and then
+// in a later stage we will first pack to uint8_t (using QUANT.q) in the .ntc file and then
 // unpack it. The MLP has to be fine tuned with the loss of this procedure, so for now we simulate it
 // by doing both operations here
 if QUANT.q > 0 {
@@ -412,21 +437,47 @@ for step in 0..<nFineTune {
 event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 
 
-// infer all mips and write them to a [4096+2048, 4096] texture atlas
+// infer all mips and write them to two [4096+2048, 4096] texture atlases
 let ATLAS_W = SRC_W + SRC_W / 2
 let ATLAS_H = SRC_H
-var atlas = [Float](repeating: 0, count: ATLAS_W * ATLAS_H * K_OUT)
+var colorAtlas  = [Float](repeating: 0, count: ATLAS_W * ATLAS_H * C_PER_MATERIAL)
+var normalAtlas = [Float](repeating: 0, count: ATLAS_W * ATLAS_H * C_PER_MATERIAL)
 
 let outPtr = outputBuffer.contents().bindMemory(to: Float.self,
                                                 capacity: SRC_H * SRC_W * K_OUT)
 
-// pyramid mip texels back to CPU for PSNR
+// pyramid mip texels back to CPU for PSNR (one slice at a time)
 var pyramidScratch = [SIMD4<Float>](repeating: .zero, count: SRC_H * SRC_W)
+
+@MainActor
+func readPyramidSlice(lod: Int, slice: Int, outWL: Int, outHL: Int) {
+    let region = MTLRegionMake2D(0, 0, outWL, outHL)
+    pyramidScratch.withUnsafeMutableBufferPointer { buf in
+        pyramidBuilder.pyramidTexture.getBytes(buf.baseAddress!,
+                                               bytesPerRow: outWL * MemoryLayout<SIMD4<Float>>.stride,
+                                               bytesPerImage: outWL * outHL * MemoryLayout<SIMD4<Float>>.stride,
+                                               from: region,
+                                               mipmapLevel: lod,
+                                               slice: slice)
+    }
+}
+
+@MainActor
+func mseAgainstScratch(channelBase: Int, outWL: Int, outHL: Int) -> Double {
+    var mse: Double = 0
+    for i in 0..<(outWL * outHL) {
+        let gt = pyramidScratch[i]
+        let dr = Double(outPtr[i * K_OUT + channelBase + 0] - gt.x)
+        let dg = Double(outPtr[i * K_OUT + channelBase + 1] - gt.y)
+        let db = Double(outPtr[i * K_OUT + channelBase + 2] - gt.z)
+        mse += dr * dr + dg * dg + db * db
+    }
+    return mse / Double(outWL * outHL * C_PER_MATERIAL)
+}
 
 for lod in 0..<pyramidBuilder.mipCount {
     let outWL = max(SRC_W >> lod, 1)
     let outHL = max(SRC_H >> lod, 1)
-    let pixelCountLod = outWL * outHL * K_OUT
 
     stepConstsPtr.pointee.inferLod = UInt32(lod)
 
@@ -448,29 +499,16 @@ for lod in 0..<pyramidBuilder.mipCount {
     ctx.queue.signalEvent(event, value: signalValue)
     event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
 
-    // read ground-truth mip from the pyramid texture for PSNR
-    let region = MTLRegionMake2D(0, 0, outWL, outHL)
-    pyramidScratch.withUnsafeMutableBufferPointer { buf in
-        pyramidBuilder.pyramidTexture.getBytes(buf.baseAddress!,
-                                               bytesPerRow: outWL * MemoryLayout<SIMD4<Float>>.stride,
-                                               bytesPerImage: outWL * outHL * MemoryLayout<SIMD4<Float>>.stride,
-                                               from: region,
-                                               mipmapLevel: lod,
-                                               slice: 0)
-    }
+    readPyramidSlice(lod: lod, slice: 0, outWL: outWL, outHL: outHL)
+    let colorMse  = mseAgainstScratch(channelBase: 0, outWL: outWL, outHL: outHL)
+    let colorPsnr = 10.0 * log10(1.0 / colorMse)
 
-    var mse: Double = 0
-    for i in 0..<(outWL * outHL) {
-        let gt = pyramidScratch[i]
-        let dr = Double(outPtr[i * K_OUT + 0] - gt.x)
-        let dg = Double(outPtr[i * K_OUT + 1] - gt.y)
-        let db = Double(outPtr[i * K_OUT + 2] - gt.z)
-        mse += dr * dr + dg * dg + db * db
-    }
-    mse /= Double(pixelCountLod)
-    let psnr = 10.0 * log10(1.0 / mse)
-    print(String(format: "LOD %2d  %4dx%-4d  MSE = %.6e   PSNR = %.2f dB",
-                 lod, outWL, outHL, mse, psnr))
+    readPyramidSlice(lod: lod, slice: 1, outWL: outWL, outHL: outHL)
+    let normalMse  = mseAgainstScratch(channelBase: C_PER_MATERIAL, outWL: outWL, outHL: outHL)
+    let normalPsnr = 10.0 * log10(1.0 / normalMse)
+
+    print(String(format: "LOD %2d  %4dx%-4d   color PSNR = %.2f dB   normal PSNR = %.2f dB",
+                 lod, outWL, outHL, colorPsnr, normalPsnr))
 
     // mip 0 goes on the left, rest of the mips to the right and down
     let xOff: Int
@@ -491,15 +529,19 @@ for lod in 0..<pyramidBuilder.mipCount {
     for y in 0..<outHL {
         for x in 0..<outWL {
             let srcIdx = (y * outWL + x) * K_OUT
-            let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * K_OUT
-            atlas[dstIdx + 0] = outPtr[srcIdx + 0]
-            atlas[dstIdx + 1] = outPtr[srcIdx + 1]
-            atlas[dstIdx + 2] = outPtr[srcIdx + 2]
+            let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * C_PER_MATERIAL
+            colorAtlas[dstIdx + 0]  = outPtr[srcIdx + 0]
+            colorAtlas[dstIdx + 1]  = outPtr[srcIdx + 1]
+            colorAtlas[dstIdx + 2]  = outPtr[srcIdx + 2]
+            normalAtlas[dstIdx + 0] = outPtr[srcIdx + 3]
+            normalAtlas[dstIdx + 1] = outPtr[srcIdx + 4]
+            normalAtlas[dstIdx + 2] = outPtr[srcIdx + 5]
         }
     }
 }
 
-let atlasImg = LoadedImage(pixels: atlas, height: ATLAS_H, width: ATLAS_W, channels: K_OUT)
 let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
-let outURL = outDir.appendingPathComponent("grid_mlp_color_lod_atlas.png")
-try save_image(atlasImg, to: outURL)
+let colorAtlasImg  = LoadedImage(pixels: colorAtlas,  height: ATLAS_H, width: ATLAS_W, channels: C_PER_MATERIAL)
+let normalAtlasImg = LoadedImage(pixels: normalAtlas, height: ATLAS_H, width: ATLAS_W, channels: C_PER_MATERIAL)
+try save_image(colorAtlasImg,  to: outDir.appendingPathComponent("grid_mlp_color_lod_atlas.png"))
+try save_image(normalAtlasImg, to: outDir.appendingPathComponent("grid_mlp_normal_lod_atlas.png"))

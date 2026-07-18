@@ -3,13 +3,14 @@
 using namespace metal;
 
 #define K_HIDDEN 64
-#define K_OUT    3
+
+#define K_OUT    6
 
 #define OUT_W 4096
 #define OUT_H 4096
 
 #define F_TOTAL   (2 * F_PER_GRID)
-#define F_IN      (F_TOTAL + PE_DIM)
+#define F_IN      (F_TOTAL + PE_DIM + 1)
 #define POS_SCALE (float(OUT_W) / 8.0f)
 
 kernel void grid_mlp_infer(device   const       float*          params  [[buffer(0)]],
@@ -62,7 +63,8 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
     float2 uv   = float2(float(x) / denomX, float(y) / denomY);
     float2 posf = uv * POS_SCALE;
     pe_encode(posf, features + F_TOTAL);
-    
+
+    features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
     // ========
     // Forward
     // ========
