@@ -8,6 +8,11 @@ constant int SCALE = 1 << 24;
 #define PE_WAVES 3
 #define PE_DIM   (4 * PE_WAVES)
 
+// Latent pyramid: K_GRIDS levels, adjacent pair (nm, nm+1) sampled per output mip.
+// F_PER_GRID channels per level. MLP still sees 2 * F_PER_GRID grid features.
+#define K_GRIDS     8
+#define F_PER_GRID  8
+#define MAX_LODS    13
 
 struct SPDConstants {
     uint numWorkgroups;
@@ -15,22 +20,23 @@ struct SPDConstants {
 };
 
 struct StepConstants {
-    uint kBatch;
-    uint offsetG1;
-    uint offsetG2;
-    uint offsetW1;
-    uint offsetB1;
-    uint offsetW2;
-    uint offsetB2;
-    uint offsetW3;
-    uint offsetB3;
-    uint total;
-    uint bitsPerGrid[2];
-    float qPerGrid[2];
-    float loPerGrid[2];
-    float hiPerGrid[2];
-    uint adamOffset; // for fine-tune training after fake quantization
-    uint inferLod;
+    uint  kBatch;
+    uint  pyramidOffsets[K_GRIDS + 1];
+    uint  pyramidSizes  [K_GRIDS];
+    uint  offsetW1;
+    uint  offsetB1;
+    uint  offsetW2;
+    uint  offsetB2;
+    uint  offsetW3;
+    uint  offsetB3;
+    uint  total;
+    uint  bits;
+    float q;
+    float lo;
+    float hi;
+    uint  adamOffset; // for MLP-only fine-tune after fake quantization
+    uint  inferLod;
+    uint  neuralMipForLod[MAX_LODS];
 };
 
 // a cheap piecewise approximation of GELU

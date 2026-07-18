@@ -2,25 +2,14 @@
 #include "common.h"
 using namespace metal;
 
-#define GRID_H1  1024
-#define GRID_W1  1024
-#define GRID_F1  8
-#define GRID1_TOTAL  (GRID_H1 * GRID_W1 * GRID_F1)
-
-#define GRID_H2  512
-#define GRID_W2  512
-#define GRID_F2  8
-#define GRID2_TOTAL  (GRID_H2 * GRID_W2 * GRID_F2)
-
-#define GRID_F_TOTAL (GRID_F1 + GRID_F2)
-
 #define K_HIDDEN 64
 #define K_OUT    3
 
 #define OUT_W 4096
 #define OUT_H 4096
 
-#define F_IN      (GRID_F_TOTAL + PE_DIM)
+#define F_TOTAL   (2 * F_PER_GRID)
+#define F_IN      (F_TOTAL + PE_DIM)
 #define POS_SCALE (float(OUT_W) / 8.0f)
 
 kernel void grid_mlp_infer(device   const       float*          params  [[buffer(0)]],
@@ -39,36 +28,40 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
     float denomX = float(max(int(outWL) - 1, 1));
     float denomY = float(max(int(outHL) - 1, 1));
 
-    float ix1 = float(x) * float(GRID_W1 - 1) / denomX;
-    float iy1 = float(y) * float(GRID_H1 - 1) / denomY;
-    int iy0_1 = int(floor(iy1));
-    int ix0_1 = int(floor(ix1));
-    iy0_1 = min(iy0_1, GRID_H1 - 2);
-    ix0_1 = min(ix0_1, GRID_W1 - 2);
-    float fy1 = iy1 - float(iy0_1);
+    uint neural_mip = consts.neuralMipForLod[lod];
+    uint g0_offset  = consts.pyramidOffsets[neural_mip];
+    uint g1_offset  = consts.pyramidOffsets[neural_mip + 1];
+    uint g0_size    = consts.pyramidSizes[neural_mip];
+    uint g1_size    = consts.pyramidSizes[neural_mip + 1];
+
+    // G0
+    float ix0 = float(x) * float(g0_size - 1) / denomX;
+    float iy0 = float(y) * float(g0_size - 1) / denomY;
+    int ix0_0 = min(int(floor(ix0)), int(g0_size) - 2);
+    int iy0_0 = min(int(floor(iy0)), int(g0_size) - 2);
+    float fx0 = ix0 - float(ix0_0);
+    float fy0 = iy0 - float(iy0_0);
+    
+    // G1
+    float ix1 = float(x) * float(g1_size - 1) / denomX;
+    float iy1 = float(y) * float(g1_size - 1) / denomY;
+    int ix0_1 = min(int(floor(ix1)), int(g1_size) - 2);
+    int iy0_1 = min(int(floor(iy1)), int(g1_size) - 2);
     float fx1 = ix1 - float(ix0_1);
+    float fy1 = iy1 - float(iy0_1);
 
-    float ix2 = float(x) * float(GRID_W2 - 1) / denomX;
-    float iy2 = float(y) * float(GRID_H2 - 1) / denomY;
-    int iy0_2 = int(floor(iy2));
-    int ix0_2 = int(floor(ix2));
-    iy0_2 = min(iy0_2, GRID_H2 - 2);
-    ix0_2 = min(ix0_2, GRID_W2 - 2);
-    float fy2 = iy2 - float(iy0_2);
-    float fx2 = ix2 - float(ix0_2);
-
+    float w0[4];
     float w1[4];
-    float w2[4];
+    uint  c0[4];
     uint  c1[4];
-    uint  c2[4];
     float features[F_IN];
 
-    bilinear_sample(params                  , GRID_W1, GRID_F1, ix0_1, iy0_1, fx1, fy1, w1, c1, features          , 0.0, gid.x);
-    bilinear_sample(params + consts.offsetG2, GRID_W2, GRID_F2, ix0_2, iy0_2, fx2, fy2, w2, c2, features + GRID_F1, 0.0, gid.x);
-
+    bilinear_sample(params + g0_offset, g0_size, F_PER_GRID, ix0_0, iy0_0, fx0, fy0, w0, c0, features               , 0.0, gid.x);
+    bilinear_sample(params + g1_offset, g1_size, F_PER_GRID, ix0_1, iy0_1, fx1, fy1, w1, c1, features + F_PER_GRID  , 0.0, gid.x);
+    
     float2 uv   = float2(float(x) / denomX, float(y) / denomY);
     float2 posf = uv * POS_SCALE;
-    pe_encode(posf, features + GRID_F_TOTAL);
+    pe_encode(posf, features + F_TOTAL);
     
     // ========
     // Forward

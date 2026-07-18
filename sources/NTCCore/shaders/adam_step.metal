@@ -35,15 +35,7 @@ kernel void adam_step(device            float*          params      [[buffer(0)]
     float v_hat = v_new / adamConsts.bc2;
     params[slot] -= adamConsts.lr * m_hat / (sqrt(v_hat) + EPS);
 
-    uint grid_idx = UINT_MAX;
-    if (slot < stepConsts.offsetG2) {
-        grid_idx = 0;
-    } else if (slot < stepConsts.offsetW1) {
-        grid_idx = 1;
-    }
-    
-    // if it is a grid and quant is enabled
-    if (grid_idx != UINT_MAX && stepConsts.bitsPerGrid[grid_idx] != 0u) {
-        params[slot] = clamp(params[slot], stepConsts.loPerGrid[grid_idx], stepConsts.hiPerGrid[grid_idx]);
+    if (stepConsts.bits != 0u && slot < stepConsts.pyramidOffsets[K_GRIDS]) {
+        params[slot] = clamp(params[slot], stepConsts.lo, stepConsts.hi);
     }
 }

@@ -3,21 +3,20 @@ import NTCAssets
 import Metal
 import Foundation
 
-let GRID_H1 = 1024
-let GRID_W1 = 1024
-let GRID_F1 = 8
-let GRID1_TOTAL = GRID_H1 * GRID_W1 * GRID_F1
+let K_GRIDS     = 8
+let F_PER_GRID  = 8
+let MAX_LODS    = 13
 
-let GRID_H2 = 512
-let GRID_W2 = 512
-let GRID_F2 = 8
-let GRID2_TOTAL = GRID_H2 * GRID_W2 * GRID_F2
+let PYRAMID_SIZES: [Int] = [1024, 512, 256, 128, 64, 32, 16, 8]
+precondition(PYRAMID_SIZES.count == K_GRIDS)
 
-let GRID_F_TOTAL = GRID_F1 + GRID_F2
+let PYRAMID_SLOT_FLOATS: [Int] = PYRAMID_SIZES.map { $0 * $0 * F_PER_GRID }
+
+let F_TOTAL = 2 * F_PER_GRID
 
 let PE_WAVES = 3
 let PE_DIM   = 4 * PE_WAVES
-let F_IN     = GRID_F_TOTAL + PE_DIM
+let F_IN     = F_TOTAL + PE_DIM
 
 let K_HIDDEN = 64
 let K_OUT = 3
@@ -26,8 +25,7 @@ let K_BATCH = 4096
 let SRC_W = 4096
 let SRC_H = 4096
 
-let BITS_G1: UInt32 = 8
-let BITS_G2: UInt32 = 8
+let BITS: UInt32 = 8
 
 func fake_quant(bits: UInt32) -> (q: Float, lo: Float, hi: Float) {
     if bits == 0 {
@@ -40,12 +38,15 @@ func fake_quant(bits: UInt32) -> (q: Float, lo: Float, hi: Float) {
     return (q, lo, hi)
 }
 
-let (Q_G1, LO_G1, HI_G1) = fake_quant(bits: BITS_G1)
-let (Q_G2, LO_G2, HI_G2) = fake_quant(bits: BITS_G2)
+let QUANT: (q: Float, lo: Float, hi: Float) = fake_quant(bits: BITS)
 
-let OFFSET_G1   = 0
-let OFFSET_G2   = OFFSET_G1 + GRID1_TOTAL
-let OFFSET_W1   = OFFSET_G2 + GRID2_TOTAL
+var PYRAMID_OFFSETS: [Int] = Array(repeating: 0, count: K_GRIDS + 1)
+for i in 0..<K_GRIDS {
+    PYRAMID_OFFSETS[i + 1] = PYRAMID_OFFSETS[i] + PYRAMID_SLOT_FLOATS[i]
+}
+
+let OFFSET_MLP  = PYRAMID_OFFSETS[K_GRIDS]
+let OFFSET_W1   = OFFSET_MLP
 let OFFSET_B1   = OFFSET_W1 + F_IN * K_HIDDEN
 let OFFSET_W2   = OFFSET_B1 + K_HIDDEN
 let OFFSET_B2   = OFFSET_W2 + K_HIDDEN * K_HIDDEN
@@ -53,12 +54,22 @@ let OFFSET_W3   = OFFSET_B2 + K_HIDDEN
 let OFFSET_B3   = OFFSET_W3 + K_HIDDEN * K_OUT
 let TOTAL       = OFFSET_B3 + K_OUT
 
+
+
+//   level 0 (grids 0,1 = 1024, 512):  mips 0-3     res 4096, 2048, 1024, 512
+//   level 1 (grids 2,3 = 256, 128):   mips 4-6     res 256, 128, 64
+//   level 2 (grids 4,5 = 64, 32):     mips 7-9     res 32, 16, 8
+//   level 3 (grids 6,7 = 16, 8):      mips 10-12   res 4, 2, 1
+//
+// TODO: create preset tables for various resolutions
+let mipCount = Int(log2(Double(SRC_W))) + 1
+let NM_FOR_LOD: [UInt32] = [0, 0, 0, 0,   2, 2, 2,   4, 4, 4,   6, 6, 6]
+
 let SAMPLE_X      = 0
 let SAMPLE_Y      = 1
 let SAMPLE_LOD    = 2
 let SAMPLE_LOSS   = 3
 let SAMPLE_STRIDE = 4
-
 
 let srcURL = URL(fileURLWithPath: "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/ManholeCover010_4K-PNG_Color.png")
 let img = try load_image(at: srcURL, channels: K_OUT)
@@ -119,43 +130,71 @@ let adamConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<AdamConstants>
 let adamConstsPtr = adamConstsBuffer.contents().bindMemory(to: AdamConstants.self, capacity: 1)
 
 struct StepConstants {
-    var kBatch:         UInt32
-    var offsetG1:       UInt32
-    var offsetG2:       UInt32
-    var offsetW1:       UInt32
-    var offsetB1:       UInt32
-    var offsetW2:       UInt32
-    var offsetB2:       UInt32
-    var offsetW3:       UInt32
-    var offsetB3:       UInt32
-    var total:          UInt32
-    var bitsPerGrid:    (UInt32, UInt32)
-    var qPerGrid:       (Float,  Float)
-    var loPerGrid:      (Float,  Float)
-    var hiPerGrid:      (Float,  Float)
-    var adamOffset:     UInt32 // for fine-tune training after fake quantization
-    var inferLod:       UInt32 // LOD level for infer dispatch (0 = full resolution)
+    var kBatch:             UInt32
+    var pyramidOffsets:     (UInt32, UInt32, UInt32, UInt32,
+                             UInt32, UInt32, UInt32, UInt32,
+                             UInt32)
+    var pyramidSizes:       (UInt32, UInt32, UInt32, UInt32,
+                             UInt32, UInt32, UInt32, UInt32)
+    var offsetW1:           UInt32
+    var offsetB1:           UInt32
+    var offsetW2:           UInt32
+    var offsetB2:           UInt32
+    var offsetW3:           UInt32
+    var offsetB3:           UInt32
+    var total:              UInt32
+    var bits:               UInt32
+    var q:                  Float
+    var lo:                 Float
+    var hi:                 Float
+    var adamOffset:         UInt32
+    var inferLod:           UInt32
+    // max mips 13 for 4k textures
+    var neuralMipsForLod:   (UInt32, UInt32, UInt32, UInt32,
+                            UInt32, UInt32, UInt32, UInt32,
+                            UInt32, UInt32, UInt32, UInt32,
+                            UInt32)
 }
 
 let stepConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<StepConstants>.stride,
                                              options: .storageModeShared)!
 let stepConstsPtr = stepConstsBuffer.contents().bindMemory(to: StepConstants.self, capacity: 1)
-stepConstsPtr.pointee = StepConstants(kBatch:         UInt32(K_BATCH),
-                                      offsetG1:       UInt32(OFFSET_G1),
-                                      offsetG2:       UInt32(OFFSET_G2),
-                                      offsetW1:       UInt32(OFFSET_W1),
-                                      offsetB1:       UInt32(OFFSET_B1),
-                                      offsetW2:       UInt32(OFFSET_W2),
-                                      offsetB2:       UInt32(OFFSET_B2),
-                                      offsetW3:       UInt32(OFFSET_W3),
-                                      offsetB3:       UInt32(OFFSET_B3),
-                                      total:          UInt32(TOTAL),
-                                      bitsPerGrid:    (0, 0),
-                                      qPerGrid:       (Q_G1,    Q_G2),
-                                      loPerGrid:      (LO_G1,   LO_G2),
-                                      hiPerGrid:      (HI_G1,   HI_G2),
-                                      adamOffset:     0,
-                                      inferLod:       0)
+stepConstsPtr.pointee = StepConstants(
+    kBatch:             UInt32(K_BATCH),
+    pyramidOffsets:     (UInt32(PYRAMID_OFFSETS[0]), UInt32(PYRAMID_OFFSETS[1]),
+                         UInt32(PYRAMID_OFFSETS[2]), UInt32(PYRAMID_OFFSETS[3]),
+                         UInt32(PYRAMID_OFFSETS[4]), UInt32(PYRAMID_OFFSETS[5]),
+                         UInt32(PYRAMID_OFFSETS[6]), UInt32(PYRAMID_OFFSETS[7]),
+                         UInt32(PYRAMID_OFFSETS[8])),
+    pyramidSizes:       (UInt32(PYRAMID_SIZES[0]),   UInt32(PYRAMID_SIZES[1]),
+                         UInt32(PYRAMID_SIZES[2]),   UInt32(PYRAMID_SIZES[3]),
+                         UInt32(PYRAMID_SIZES[4]),   UInt32(PYRAMID_SIZES[5]),
+                         UInt32(PYRAMID_SIZES[6]),   UInt32(PYRAMID_SIZES[7])),
+    offsetW1:           UInt32(OFFSET_W1),
+    offsetB1:           UInt32(OFFSET_B1),
+    offsetW2:           UInt32(OFFSET_W2),
+    offsetB2:           UInt32(OFFSET_B2),
+    offsetW3:           UInt32(OFFSET_W3),
+    offsetB3:           UInt32(OFFSET_B3),
+    total:              UInt32(TOTAL),
+    bits:               BITS,
+    q:                  QUANT.q,
+    lo:                 QUANT.lo,
+    hi:                 QUANT.hi,
+    adamOffset:         0,
+    inferLod:           0,
+    neuralMipsForLod:   (NM_FOR_LOD[0],  NM_FOR_LOD[1],  NM_FOR_LOD[2],  NM_FOR_LOD[3],
+                         NM_FOR_LOD[4],  NM_FOR_LOD[5],  NM_FOR_LOD[6],  NM_FOR_LOD[7],
+                         NM_FOR_LOD[8],  NM_FOR_LOD[9],  NM_FOR_LOD[10], NM_FOR_LOD[11],
+                         NM_FOR_LOD[12])
+)
+
+print("pyramid layout: K_GRIDS=\(K_GRIDS)  F_PER_GRID=\(F_PER_GRID)")
+for i in 0..<K_GRIDS {
+    print(String(format: "  pyramid[%d] %4dx%-4d x %d ch    offset=%-10d  floats=%d",
+                 i, PYRAMID_SIZES[i], PYRAMID_SIZES[i], F_PER_GRID,
+                 PYRAMID_OFFSETS[i], PYRAMID_SLOT_FLOATS[i]))
+}
 
 let setDesc = MTLResidencySetDescriptor()
 setDesc.label = "grid_mlp_train.residency"
@@ -215,7 +254,12 @@ inferArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
 let w1Bound = sqrtf(6.0 / Float(F_IN))
 let w2Bound = sqrtf(6.0 / Float(K_HIDDEN))
 
-for i in OFFSET_G1..<OFFSET_W1  { paramsFloats[i] = Float.random(in: -0.05...0.05) }
+
+for i in 0..<K_GRIDS {
+    let lo = PYRAMID_OFFSETS[i]
+    let hi = PYRAMID_OFFSETS[i + 1]
+    for j in lo..<hi { paramsFloats[j] = Float.random(in: -0.05...0.05) }
+}
 for i in OFFSET_W1..<OFFSET_B1  { paramsFloats[i] = Float.random(in: -w1Bound...w1Bound) }
 for i in OFFSET_B1..<OFFSET_W2  { paramsFloats[i] = 0 }
 for i in OFFSET_W2..<OFFSET_B2  { paramsFloats[i] = Float.random(in: -w2Bound...w2Bound) }
@@ -301,21 +345,16 @@ event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 // in a later stage we will first pack to uint8_t (using Q_G1 and Q_G2) in the .ntc file and then
 // unpack it. The MLP has to be fine tuned with the loss of this procedure, so for now we simulate it
 // by doing both operations here
-if Q_G1 > 0 {
-    for i in OFFSET_G1..<OFFSET_G2 {
-        paramsFloats[i] = (paramsFloats[i] / Q_G1).rounded() * Q_G1
-    }
-}
-if Q_G2 > 0 {
-    for i in OFFSET_G2..<OFFSET_W1 {
-        paramsFloats[i] = (paramsFloats[i] / Q_G2).rounded() * Q_G2
+if QUANT.q > 0 {
+    for j in 0..<OFFSET_MLP {
+        paramsFloats[j] = (paramsFloats[j] / QUANT.q).rounded() * QUANT.q
     }
 }
 
-stepConstsPtr.pointee.adamOffset = UInt32(OFFSET_W1)
+stepConstsPtr.pointee.adamOffset = UInt32(OFFSET_MLP)
 
-let nFineTune = (BITS_G1 == 0 && BITS_G2 == 0) ? 0 : nSteps / 20 // 5% fine tuning as in the nvidia paper
-let mlpSlots = TOTAL - OFFSET_W1
+let nFineTune = BITS != 0 ? nSteps / 20 : 0 // 5% fine tuning as in the nvidia paper
+let mlpSlots = TOTAL - OFFSET_MLP
 
 for step in 0..<nFineTune {
     event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
