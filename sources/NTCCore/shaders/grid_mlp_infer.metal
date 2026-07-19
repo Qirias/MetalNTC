@@ -4,7 +4,8 @@ using namespace metal;
 
 #define K_HIDDEN 64
 
-#define K_OUT    6
+#define K_OUT     11
+#define K_OUT_MAX 16
 
 #define OUT_W 4096
 #define OUT_H 4096
@@ -72,12 +73,12 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
     float pre2[K_HIDDEN];
     float hid1[K_HIDDEN];
     float hid2[K_HIDDEN];
-    float pred[K_OUT];
+    float pred[K_OUT_MAX];
     mlp_forward(params,
                 consts.offsetW1, consts.offsetB1,
                 consts.offsetW2, consts.offsetB2,
                 consts.offsetW3, consts.offsetB3,
-                F_IN, K_HIDDEN, K_OUT,
+                F_IN, K_HIDDEN, K_OUT_MAX,
                 features,
                 pre1, hid1, pre2, hid2, pred);
 

@@ -19,8 +19,30 @@ let PE_DIM   = 4 * PE_WAVES
 let F_IN     = F_TOTAL + PE_DIM + 1
 
 let K_HIDDEN = 64
-let C_PER_MATERIAL = 3
-let K_OUT = 6
+
+
+struct MaterialSpec {
+    let name: String
+    let fileSuffix: String
+    let channels: Int // 1 or 3
+    let sliceIndex: Int
+    let channelOffset: Int
+}
+
+let MATERIALS: [MaterialSpec] = [
+    .init(name: "color",        fileSuffix: "Color",            channels: 3, sliceIndex: 0, channelOffset: 0),
+    .init(name: "normal",       fileSuffix: "NormalGL",         channels: 3, sliceIndex: 1, channelOffset: 3),
+    .init(name: "roughness",    fileSuffix: "Roughness",        channels: 1, sliceIndex: 2, channelOffset: 6),
+    .init(name: "metalness",    fileSuffix: "Metalness",        channels: 1, sliceIndex: 3, channelOffset: 7),
+    .init(name: "ao",           fileSuffix: "AmbientOcclusion", channels: 1, sliceIndex: 4, channelOffset: 8),
+    .init(name: "displacement", fileSuffix: "Displacement",     channels: 1, sliceIndex: 5, channelOffset: 9),
+    .init(name: "opacity",      fileSuffix: "Opacity",          channels: 1, sliceIndex: 6, channelOffset: 10),
+]
+
+let N_MATERIAL_SLICES = MATERIALS.count
+let K_OUT             = MATERIALS.reduce(0) { $0 + $1.channels }
+let K_OUT_MAX         = 16
+precondition(K_OUT <= K_OUT_MAX, "K_OUT (\(K_OUT)) exceeds K_OUT_MAX (\(K_OUT_MAX))")
 let K_BATCH = 4096
 
 let SRC_W = 4096
@@ -52,8 +74,8 @@ let OFFSET_B1   = OFFSET_W1 + F_IN * K_HIDDEN
 let OFFSET_W2   = OFFSET_B1 + K_HIDDEN
 let OFFSET_B2   = OFFSET_W2 + K_HIDDEN * K_HIDDEN
 let OFFSET_W3   = OFFSET_B2 + K_HIDDEN
-let OFFSET_B3   = OFFSET_W3 + K_HIDDEN * K_OUT
-let TOTAL       = OFFSET_B3 + K_OUT
+let OFFSET_B3   = OFFSET_W3 + K_HIDDEN * K_OUT_MAX
+let TOTAL       = OFFSET_B3 + K_OUT_MAX
 
 
 
@@ -72,13 +94,16 @@ let SAMPLE_LOD    = 2
 let SAMPLE_LOSS   = 3
 let SAMPLE_STRIDE = 4
 
-let N_MATERIAL_SLICES = 2
+let assetDir  = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
+let assetBase = "ManholeCover010_4K-PNG"
 
-let assetDir = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
-let colorURL  = URL(fileURLWithPath: "\(assetDir)/ManholeCover010_4K-PNG_Color.png")
-let normalURL = URL(fileURLWithPath: "\(assetDir)/ManholeCover010_4K-PNG_NormalGL.png")
-let colorImg  = try load_image(at: colorURL,  channels: C_PER_MATERIAL)
-let normalImg = try load_image(at: normalURL, channels: C_PER_MATERIAL)
+let materialImages: [LoadedImage] = try MATERIALS.map { m in
+    let url = URL(fileURLWithPath: "\(assetDir)/\(assetBase)_\(m.fileSuffix).png")
+    let img = try load_image(at: url, channels: m.channels)
+    precondition(img.width == SRC_W && img.height == SRC_H,
+                 "\(m.name): expected \(SRC_W)x\(SRC_H), got \(img.width)x\(img.height)")
+    return img
+}
 
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = try ctx.makeComputePipelineState(function: "grid_mlp_train")
@@ -108,12 +133,19 @@ sourceTexDesc.storageMode     = .shared
 let sourceTexture = ctx.device.makeTexture(descriptor: sourceTexDesc)!
 
 func packRGBA(_ img: LoadedImage) -> [SIMD4<Float>] {
+    precondition(img.channels == 1 || img.channels == 3)
     var arr = [SIMD4<Float>](repeating: .zero, count: SRC_H * SRC_W)
-    for i in 0..<(SRC_H * SRC_W) {
-        arr[i] = SIMD4<Float>(img.pixels[i * C_PER_MATERIAL + 0],
-                              img.pixels[i * C_PER_MATERIAL + 1],
-                              img.pixels[i * C_PER_MATERIAL + 2],
-                              0)
+    if img.channels == 3 {
+        for i in 0..<(SRC_H * SRC_W) {
+            arr[i] = SIMD4<Float>(img.pixels[i * 3 + 0],
+                                  img.pixels[i * 3 + 1],
+                                  img.pixels[i * 3 + 2],
+                                  0)
+        }
+    } else {
+        for i in 0..<(SRC_H * SRC_W) {
+            arr[i] = SIMD4<Float>(img.pixels[i], 0, 0, 0)
+        }
     }
     return arr
 }
@@ -132,8 +164,9 @@ func uploadSlice(_ img: LoadedImage, into texture: any MTLTexture, slice: Int) {
                         bytesPerImage: bytesPerImage)
     }
 }
-uploadSlice(colorImg,  into: sourceTexture, slice: 0)
-uploadSlice(normalImg, into: sourceTexture, slice: 1)
+for (m, img) in zip(MATERIALS, materialImages) {
+    uploadSlice(img, into: sourceTexture, slice: m.sliceIndex)
+}
 
 let pyramidBuilder = try MipPyramidBuilder(ctx: ctx, srcW: SRC_W, srcH: SRC_H, sourceTexture: sourceTexture)
 
@@ -440,8 +473,10 @@ event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 // infer all mips and write them to two [4096+2048, 4096] texture atlases
 let ATLAS_W = SRC_W + SRC_W / 2
 let ATLAS_H = SRC_H
-var colorAtlas  = [Float](repeating: 0, count: ATLAS_W * ATLAS_H * C_PER_MATERIAL)
-var normalAtlas = [Float](repeating: 0, count: ATLAS_W * ATLAS_H * C_PER_MATERIAL)
+
+var atlases: [[Float]] = MATERIALS.map { m in
+    [Float](repeating: 0, count: ATLAS_W * ATLAS_H * m.channels)
+}
 
 let outPtr = outputBuffer.contents().bindMemory(to: Float.self,
                                                 capacity: SRC_H * SRC_W * K_OUT)
@@ -463,16 +498,25 @@ func readPyramidSlice(lod: Int, slice: Int, outWL: Int, outHL: Int) {
 }
 
 @MainActor
-func mseAgainstScratch(channelBase: Int, outWL: Int, outHL: Int) -> Double {
+func materialMse(_ m: MaterialSpec, outWL: Int, outHL: Int) -> Double {
     var mse: Double = 0
-    for i in 0..<(outWL * outHL) {
-        let gt = pyramidScratch[i]
-        let dr = Double(outPtr[i * K_OUT + channelBase + 0] - gt.x)
-        let dg = Double(outPtr[i * K_OUT + channelBase + 1] - gt.y)
-        let db = Double(outPtr[i * K_OUT + channelBase + 2] - gt.z)
-        mse += dr * dr + dg * dg + db * db
+    let base = m.channelOffset
+    if m.channels == 3 {
+        for i in 0..<(outWL * outHL) {
+            let gt = pyramidScratch[i]
+            let dr = Double(outPtr[i * K_OUT + base + 0] - gt.x)
+            let dg = Double(outPtr[i * K_OUT + base + 1] - gt.y)
+            let db = Double(outPtr[i * K_OUT + base + 2] - gt.z)
+            mse += dr * dr + dg * dg + db * db
+        }
+    } else {
+        for i in 0..<(outWL * outHL) {
+            let gt = pyramidScratch[i]
+            let d = Double(outPtr[i * K_OUT + base] - gt.x)
+            mse += d * d
+        }
     }
-    return mse / Double(outWL * outHL * C_PER_MATERIAL)
+    return mse / Double(outWL * outHL * m.channels)
 }
 
 for lod in 0..<pyramidBuilder.mipCount {
@@ -499,16 +543,14 @@ for lod in 0..<pyramidBuilder.mipCount {
     ctx.queue.signalEvent(event, value: signalValue)
     event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
 
-    readPyramidSlice(lod: lod, slice: 0, outWL: outWL, outHL: outHL)
-    let colorMse  = mseAgainstScratch(channelBase: 0, outWL: outWL, outHL: outHL)
-    let colorPsnr = 10.0 * log10(1.0 / colorMse)
-
-    readPyramidSlice(lod: lod, slice: 1, outWL: outWL, outHL: outHL)
-    let normalMse  = mseAgainstScratch(channelBase: C_PER_MATERIAL, outWL: outWL, outHL: outHL)
-    let normalPsnr = 10.0 * log10(1.0 / normalMse)
-
-    print(String(format: "LOD %2d  %4dx%-4d   color PSNR = %.2f dB   normal PSNR = %.2f dB",
-                 lod, outWL, outHL, colorPsnr, normalPsnr))
+//    var line = String(format: "LOD %2d  %4dx%-4d", lod, outWL, outHL)
+//    for m in MATERIALS {
+//        readPyramidSlice(lod: lod, slice: m.sliceIndex, outWL: outWL, outHL: outHL)
+//        let mse  = materialMse(m, outWL: outWL, outHL: outHL)
+//        let psnr = 10.0 * log10(1.0 / mse)
+//        line += String(format: "   %@ = %.2f dB", m.name, psnr)
+//    }
+//    print(line)
 
     // mip 0 goes on the left, rest of the mips to the right and down
     let xOff: Int
@@ -526,22 +568,25 @@ for lod in 0..<pyramidBuilder.mipCount {
         yOff = cum
     }
 
-    for y in 0..<outHL {
-        for x in 0..<outWL {
-            let srcIdx = (y * outWL + x) * K_OUT
-            let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * C_PER_MATERIAL
-            colorAtlas[dstIdx + 0]  = outPtr[srcIdx + 0]
-            colorAtlas[dstIdx + 1]  = outPtr[srcIdx + 1]
-            colorAtlas[dstIdx + 2]  = outPtr[srcIdx + 2]
-            normalAtlas[dstIdx + 0] = outPtr[srcIdx + 3]
-            normalAtlas[dstIdx + 1] = outPtr[srcIdx + 4]
-            normalAtlas[dstIdx + 2] = outPtr[srcIdx + 5]
+    // copy this mip into every material's atlas
+    for (mi, m) in MATERIALS.enumerated() {
+        for y in 0..<outHL {
+            for x in 0..<outWL {
+                let srcIdx = (y * outWL + x) * K_OUT + m.channelOffset
+                let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * m.channels
+                for c in 0..<m.channels {
+                    atlases[mi][dstIdx + c] = outPtr[srcIdx + c]
+                }
+            }
         }
     }
 }
 
 let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
-let colorAtlasImg  = LoadedImage(pixels: colorAtlas,  height: ATLAS_H, width: ATLAS_W, channels: C_PER_MATERIAL)
-let normalAtlasImg = LoadedImage(pixels: normalAtlas, height: ATLAS_H, width: ATLAS_W, channels: C_PER_MATERIAL)
-try save_image(colorAtlasImg,  to: outDir.appendingPathComponent("grid_mlp_color_lod_atlas.png"))
-try save_image(normalAtlasImg, to: outDir.appendingPathComponent("grid_mlp_normal_lod_atlas.png"))
+for (mi, m) in MATERIALS.enumerated() {
+    let img = LoadedImage(pixels: atlases[mi],
+                          height: ATLAS_H,
+                          width:  ATLAS_W,
+                          channels: m.channels)
+    try save_image(img, to: outDir.appendingPathComponent("grid_mlp_\(m.name)_lod_atlas.png"))
+}

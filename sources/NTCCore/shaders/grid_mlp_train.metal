@@ -4,7 +4,8 @@ using namespace metal;
 
 #define K_HIDDEN 64
 
-#define K_OUT    6
+#define K_OUT     11
+#define K_OUT_MAX 16
 
 #define SRC_W 4096
 #define SRC_H 4096
@@ -35,16 +36,26 @@ kernel void grid_mlp_train(device               float*                          
     uint srcWL = max(uint(SRC_W) >> lod, 1u);
     uint srcHL = max(uint(SRC_H) >> lod, 1u);
 
-    float4 gtC = pyramid.read(uint2(uint(x), uint(y)), 0, lod);
-    float4 gtN = pyramid.read(uint2(uint(x), uint(y)), 1, lod);
-    float gt[K_OUT];
-    gt[0] = gtC.r;
-    gt[1] = gtC.g;
-    gt[2] = gtC.b;
-    gt[3] = gtN.r;
-    gt[4] = gtN.g;
-    gt[5] = gtN.b;
-    
+    uint2 coord = uint2(uint(x), uint(y));
+    float4 gtC  = pyramid.read(coord, 0, lod);
+    float4 gtN  = pyramid.read(coord, 1, lod);
+    float4 gtR  = pyramid.read(coord, 2, lod);
+    float4 gtM  = pyramid.read(coord, 3, lod);
+    float4 gtAO = pyramid.read(coord, 4, lod);
+    float4 gtD  = pyramid.read(coord, 5, lod);
+    float4 gtO  = pyramid.read(coord, 6, lod);
+    float gt[K_OUT_MAX];
+    gt[0]  = gtC.r;
+    gt[1]  = gtC.g;
+    gt[2]  = gtC.b;
+    gt[3]  = gtN.r;
+    gt[4]  = gtN.g;
+    gt[5]  = gtN.b;
+    gt[6]  = gtR.r;
+    gt[7]  = gtM.r;
+    gt[8]  = gtAO.r;
+    gt[9]  = gtD.r;
+    gt[10] = gtO.r;
 
     uint neural_mip = consts.neuralMipForLod[lod];
     
@@ -90,18 +101,18 @@ kernel void grid_mlp_train(device               float*                          
     float pre2[K_HIDDEN];
     float hid1[K_HIDDEN];
     float hid2[K_HIDDEN];
-    float pred[K_OUT];
+    float pred[K_OUT_MAX];
     mlp_forward(params,
                 consts.offsetW1, consts.offsetB1,
                 consts.offsetW2, consts.offsetB2,
                 consts.offsetW3, consts.offsetB3,
-                F_IN, K_HIDDEN, K_OUT,
+                F_IN, K_HIDDEN, K_OUT_MAX,
                 features,
                 pre1, hid1, pre2, hid2, pred);
 
     // Loss + d_pred
-    float diff[K_OUT];
-    float d_pred[K_OUT];
+    float diff[K_OUT_MAX];
+    float d_pred[K_OUT_MAX];
     float loss = 0;
     for (uint k = 0; k < K_OUT; k++) {
         diff[k] = pred[k] - gt[k];
@@ -125,8 +136,8 @@ kernel void grid_mlp_train(device               float*                          
 
     for (uint h = 0; h < K_HIDDEN; h++) {
         for (uint k = 0; k < K_OUT; k++) {
-            atomic_add_fixed(&grads[consts.offsetW3 + h * K_OUT + k], d_pred[k] * hid2[h]);
-            d_hid2[h] += params[consts.offsetW3 + h * K_OUT + k] * d_pred[k];
+            atomic_add_fixed(&grads[consts.offsetW3 + h * K_OUT_MAX + k], d_pred[k] * hid2[h]);
+            d_hid2[h] += params[consts.offsetW3 + h * K_OUT_MAX + k] * d_pred[k];
         }
     }
     
