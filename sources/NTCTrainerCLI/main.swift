@@ -20,27 +20,13 @@ let F_IN     = F_TOTAL + PE_DIM + 1
 
 let K_HIDDEN = 64
 
+let defaultManifest = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/manifest.json"
+let manifestPath    = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultManifest
+let manifestURL     = URL(fileURLWithPath: manifestPath)
+let textureSet      = try TextureSet(manifestURL: manifestURL)
 
-struct MaterialSpec {
-    let name: String
-    let fileSuffix: String
-    let channels: Int // 1 or 3
-    let sliceIndex: Int
-    let channelOffset: Int
-}
-
-let MATERIALS: [MaterialSpec] = [
-    .init(name: "color",        fileSuffix: "Color",            channels: 3, sliceIndex: 0, channelOffset: 0),
-    .init(name: "normal",       fileSuffix: "NormalGL",         channels: 3, sliceIndex: 1, channelOffset: 3),
-    .init(name: "roughness",    fileSuffix: "Roughness",        channels: 1, sliceIndex: 2, channelOffset: 6),
-    .init(name: "metalness",    fileSuffix: "Metalness",        channels: 1, sliceIndex: 3, channelOffset: 7),
-    .init(name: "ao",           fileSuffix: "AmbientOcclusion", channels: 1, sliceIndex: 4, channelOffset: 8),
-    .init(name: "displacement", fileSuffix: "Displacement",     channels: 1, sliceIndex: 5, channelOffset: 9),
-    .init(name: "opacity",      fileSuffix: "Opacity",          channels: 1, sliceIndex: 6, channelOffset: 10),
-]
-
-let N_MATERIAL_SLICES = MATERIALS.count
-let K_OUT             = MATERIALS.reduce(0) { $0 + $1.channels }
+let N_MATERIAL_SLICES = textureSet.slots.count
+let K_OUT             = textureSet.kOut
 let K_OUT_MAX         = 16
 precondition(K_OUT <= K_OUT_MAX, "K_OUT (\(K_OUT)) exceeds K_OUT_MAX (\(K_OUT_MAX))")
 let K_BATCH = 4096
@@ -94,16 +80,7 @@ let SAMPLE_LOD    = 2
 let SAMPLE_LOSS   = 3
 let SAMPLE_STRIDE = 4
 
-let assetDir  = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
-let assetBase = "ManholeCover010_4K-PNG"
-
-let materialImages: [LoadedImage] = try MATERIALS.map { m in
-    let url = URL(fileURLWithPath: "\(assetDir)/\(assetBase)_\(m.fileSuffix).png")
-    let img = try load_image(at: url, channels: m.channels)
-    precondition(img.width == SRC_W && img.height == SRC_H,
-                 "\(m.name): expected \(SRC_W)x\(SRC_H), got \(img.width)x\(img.height)")
-    return img
-}
+let materialImages: [LoadedImage] = try textureSet.loadImages(width: SRC_W, height: SRC_H)
 
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = try ctx.makeComputePipelineState(function: "grid_mlp_train")
@@ -164,8 +141,8 @@ func uploadSlice(_ img: LoadedImage, into texture: any MTLTexture, slice: Int) {
                         bytesPerImage: bytesPerImage)
     }
 }
-for (m, img) in zip(MATERIALS, materialImages) {
-    uploadSlice(img, into: sourceTexture, slice: m.sliceIndex)
+for (slot, img) in zip(textureSet.slots, materialImages) {
+    uploadSlice(img, into: sourceTexture, slice: slot.sliceIndex)
 }
 
 let pyramidBuilder = try MipPyramidBuilder(ctx: ctx, srcW: SRC_W, srcH: SRC_H, sourceTexture: sourceTexture)
@@ -212,6 +189,17 @@ struct StepConstants {
                             UInt32, UInt32, UInt32, UInt32,
                             UInt32, UInt32, UInt32, UInt32,
                             UInt32)
+    var kOut:                UInt32
+    var nSlices:             UInt32
+    // K_OUT_MAX slice channels and offsets
+    var sliceChannels:       (UInt32, UInt32, UInt32, UInt32,
+                              UInt32, UInt32, UInt32, UInt32,
+                              UInt32, UInt32, UInt32, UInt32,
+                              UInt32, UInt32, UInt32, UInt32)
+    var sliceChannelOffsets: (UInt32, UInt32, UInt32, UInt32,
+                              UInt32, UInt32, UInt32, UInt32,
+                              UInt32, UInt32, UInt32, UInt32,
+                              UInt32, UInt32, UInt32, UInt32)
 }
 
 let stepConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<StepConstants>.stride,
@@ -244,8 +232,27 @@ stepConstsPtr.pointee = StepConstants(
     neuralMipsForLod:   (NM_FOR_LOD[0],  NM_FOR_LOD[1],  NM_FOR_LOD[2],  NM_FOR_LOD[3],
                          NM_FOR_LOD[4],  NM_FOR_LOD[5],  NM_FOR_LOD[6],  NM_FOR_LOD[7],
                          NM_FOR_LOD[8],  NM_FOR_LOD[9],  NM_FOR_LOD[10], NM_FOR_LOD[11],
-                         NM_FOR_LOD[12])
+                         NM_FOR_LOD[12]),
+    kOut:                UInt32(K_OUT),
+    nSlices:             UInt32(N_MATERIAL_SLICES),
+    sliceChannels:       (0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0),
+    sliceChannelOffsets: (0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0)
 )
+
+withUnsafeMutablePointer(to: &stepConstsPtr.pointee.sliceChannels) { tup in
+    tup.withMemoryRebound(to: UInt32.self, capacity: K_OUT_MAX) { p in
+        for (i, slot) in textureSet.slots.enumerated() {
+            p[i] = UInt32(slot.channels)
+        }
+    }
+}
+withUnsafeMutablePointer(to: &stepConstsPtr.pointee.sliceChannelOffsets) { tup in
+    tup.withMemoryRebound(to: UInt32.self, capacity: K_OUT_MAX) { p in
+        for (i, slot) in textureSet.slots.enumerated() {
+            p[i] = UInt32(slot.channelOffset)
+        }
+    }
+}
 
 print("pyramid layout: K_GRIDS=\(K_GRIDS)  F_PER_GRID=\(F_PER_GRID)")
 for i in 0..<K_GRIDS {
@@ -474,8 +481,8 @@ event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 let ATLAS_W = SRC_W + SRC_W / 2
 let ATLAS_H = SRC_H
 
-var atlases: [[Float]] = MATERIALS.map { m in
-    [Float](repeating: 0, count: ATLAS_W * ATLAS_H * m.channels)
+var atlases: [[Float]] = textureSet.slots.map { s in
+    [Float](repeating: 0, count: ATLAS_W * ATLAS_H * s.channels)
 }
 
 let outPtr = outputBuffer.contents().bindMemory(to: Float.self,
@@ -498,10 +505,10 @@ func readPyramidSlice(lod: Int, slice: Int, outWL: Int, outHL: Int) {
 }
 
 @MainActor
-func materialMse(_ m: MaterialSpec, outWL: Int, outHL: Int) -> Double {
+func materialMse(_ s: TextureSlot, outWL: Int, outHL: Int) -> Double {
     var mse: Double = 0
-    let base = m.channelOffset
-    if m.channels == 3 {
+    let base = s.channelOffset
+    if s.channels == 3 {
         for i in 0..<(outWL * outHL) {
             let gt = pyramidScratch[i]
             let dr = Double(outPtr[i * K_OUT + base + 0] - gt.x)
@@ -516,7 +523,7 @@ func materialMse(_ m: MaterialSpec, outWL: Int, outHL: Int) -> Double {
             mse += d * d
         }
     }
-    return mse / Double(outWL * outHL * m.channels)
+    return mse / Double(outWL * outHL * s.channels)
 }
 
 for lod in 0..<pyramidBuilder.mipCount {
@@ -544,11 +551,11 @@ for lod in 0..<pyramidBuilder.mipCount {
     event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
 
 //    var line = String(format: "LOD %2d  %4dx%-4d", lod, outWL, outHL)
-//    for m in MATERIALS {
-//        readPyramidSlice(lod: lod, slice: m.sliceIndex, outWL: outWL, outHL: outHL)
-//        let mse  = materialMse(m, outWL: outWL, outHL: outHL)
+//    for s in textureSet.slots {
+//        readPyramidSlice(lod: lod, slice: s.sliceIndex, outWL: outWL, outHL: outHL)
+//        let mse  = materialMse(s, outWL: outWL, outHL: outHL)
 //        let psnr = 10.0 * log10(1.0 / mse)
-//        line += String(format: "   %@ = %.2f dB", m.name, psnr)
+//        line += String(format: "   %@ = %.2f dB", s.semantic, psnr)
 //    }
 //    print(line)
 
@@ -568,25 +575,25 @@ for lod in 0..<pyramidBuilder.mipCount {
         yOff = cum
     }
 
-    // copy this mip into every material's atlas
-    for (mi, m) in MATERIALS.enumerated() {
+    // copy this mip into every slot's atlas
+    for (si, slot) in textureSet.slots.enumerated() {
         for y in 0..<outHL {
             for x in 0..<outWL {
-                let srcIdx = (y * outWL + x) * K_OUT + m.channelOffset
-                let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * m.channels
-                for c in 0..<m.channels {
-                    atlases[mi][dstIdx + c] = outPtr[srcIdx + c]
+                let srcIdx = (y * outWL + x) * K_OUT + slot.channelOffset
+                let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * slot.channels
+                for c in 0..<slot.channels {
+                    atlases[si][dstIdx + c] = outPtr[srcIdx + c]
                 }
             }
         }
     }
 }
 
-let outDir = URL(fileURLWithPath:"/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/output")
-for (mi, m) in MATERIALS.enumerated() {
-    let img = LoadedImage(pixels: atlases[mi],
+let outDir = textureSet.manifestDir.appendingPathComponent("output")
+for (si, slot) in textureSet.slots.enumerated() {
+    let img = LoadedImage(pixels: atlases[si],
                           height: ATLAS_H,
                           width:  ATLAS_W,
-                          channels: m.channels)
-    try save_image(img, to: outDir.appendingPathComponent("grid_mlp_\(m.name)_lod_atlas.png"))
+                          channels: slot.channels)
+    try save_image(img, to: outDir.appendingPathComponent("grid_mlp_\(slot.semantic.lowercased())_lod_atlas.png"))
 }

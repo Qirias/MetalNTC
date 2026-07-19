@@ -8,11 +8,11 @@ constant int SCALE = 1 << 24;
 #define PE_WAVES 3
 #define PE_DIM   (4 * PE_WAVES)
 
-// Latent pyramid: K_GRIDS levels, adjacent pair (nm, nm+1) sampled per output mip.
-// F_PER_GRID channels per level. MLP still sees 2 * F_PER_GRID grid features.
 #define K_GRIDS     8
 #define F_PER_GRID  8
 #define MAX_LODS    13
+
+#define K_OUT_MAX 16
 
 struct SPDConstants {
     uint numWorkgroups;
@@ -37,6 +37,10 @@ struct StepConstants {
     uint  adamOffset; // for MLP-only fine-tune after fake quantization
     uint  inferLod;
     uint  neuralMipForLod[MAX_LODS];
+    uint  kOut;
+    uint  nSlices;
+    uint  sliceChannels       [K_OUT_MAX];
+    uint  sliceChannelOffsets [K_OUT_MAX];
 };
 
 // a cheap piecewise approximation of GELU

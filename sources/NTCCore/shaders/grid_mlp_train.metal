@@ -4,9 +4,6 @@ using namespace metal;
 
 #define K_HIDDEN 64
 
-#define K_OUT     11
-#define K_OUT_MAX 16
-
 #define SRC_W 4096
 #define SRC_H 4096
 
@@ -37,25 +34,23 @@ kernel void grid_mlp_train(device               float*                          
     uint srcHL = max(uint(SRC_H) >> lod, 1u);
 
     uint2 coord = uint2(uint(x), uint(y));
-    float4 gtC  = pyramid.read(coord, 0, lod);
-    float4 gtN  = pyramid.read(coord, 1, lod);
-    float4 gtR  = pyramid.read(coord, 2, lod);
-    float4 gtM  = pyramid.read(coord, 3, lod);
-    float4 gtAO = pyramid.read(coord, 4, lod);
-    float4 gtD  = pyramid.read(coord, 5, lod);
-    float4 gtO  = pyramid.read(coord, 6, lod);
     float gt[K_OUT_MAX];
-    gt[0]  = gtC.r;
-    gt[1]  = gtC.g;
-    gt[2]  = gtC.b;
-    gt[3]  = gtN.r;
-    gt[4]  = gtN.g;
-    gt[5]  = gtN.b;
-    gt[6]  = gtR.r;
-    gt[7]  = gtM.r;
-    gt[8]  = gtAO.r;
-    gt[9]  = gtD.r;
-    gt[10] = gtO.r;
+    for (uint k = 0; k < K_OUT_MAX; k++) {
+        gt[k] = 0.0;
+    }
+    for (uint slice = 0; slice < consts.nSlices; slice++) {
+        float4 val  = pyramid.read(coord, slice, lod);
+        uint offset = consts.sliceChannelOffsets[slice];
+        uint num_ch = consts.sliceChannels[slice];
+        // only 3 and 1 channels supported
+        if (num_ch == 3) {
+            gt[offset + 0] = val.r;
+            gt[offset + 1] = val.g;
+            gt[offset + 2] = val.b;
+        } else {
+            gt[offset] = val.r;
+        }
+    }
 
     uint neural_mip = consts.neuralMipForLod[lod];
     
@@ -114,12 +109,12 @@ kernel void grid_mlp_train(device               float*                          
     float diff[K_OUT_MAX];
     float d_pred[K_OUT_MAX];
     float loss = 0;
-    for (uint k = 0; k < K_OUT; k++) {
+    for (uint k = 0; k < consts.kOut; k++) {
         diff[k] = pred[k] - gt[k];
         loss += diff[k]*diff[k];
-        d_pred[k] = 2 * diff[k] / float(K_OUT) / float(consts.kBatch);
+        d_pred[k] = 2 * diff[k] / float(consts.kOut) / float(consts.kBatch);
     }
-    samples[sample_base + SAMPLE_LOSS] = loss / float(K_OUT);
+    samples[sample_base + SAMPLE_LOSS] = loss / float(consts.kOut);
 
     // ========
     // Backward
@@ -130,12 +125,12 @@ kernel void grid_mlp_train(device               float*                          
         d_hid2[h] = 0;
     }
 
-    for (uint k = 0; k < K_OUT; k++) {
+    for (uint k = 0; k < consts.kOut; k++) {
         atomic_add_fixed(&grads[consts.offsetB3 + k], d_pred[k]);
     }
 
     for (uint h = 0; h < K_HIDDEN; h++) {
-        for (uint k = 0; k < K_OUT; k++) {
+        for (uint k = 0; k < consts.kOut; k++) {
             atomic_add_fixed(&grads[consts.offsetW3 + h * K_OUT_MAX + k], d_pred[k] * hid2[h]);
             d_hid2[h] += params[consts.offsetW3 + h * K_OUT_MAX + k] * d_pred[k];
         }

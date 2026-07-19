@@ -4,9 +4,6 @@ using namespace metal;
 
 #define K_HIDDEN 64
 
-#define K_OUT     11
-#define K_OUT_MAX 16
-
 #define OUT_W 4096
 #define OUT_H 4096
 
@@ -25,7 +22,7 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
 
     int x = int(gid.x);
     int y = int(gid.y);
-    uint out_base = (uint(y) * outWL + uint(x)) * K_OUT;
+    uint out_base = (uint(y) * outWL + uint(x)) * consts.kOut;
 
     float denomX = float(max(int(outWL) - 1, 1));
     float denomY = float(max(int(outHL) - 1, 1));
@@ -82,7 +79,7 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
                 features,
                 pre1, hid1, pre2, hid2, pred);
 
-    for (uint k = 0; k < K_OUT; k++) {
+    for (uint k = 0; k < consts.kOut; k++) {
         output[out_base + k] = pred[k];
     }
 }
