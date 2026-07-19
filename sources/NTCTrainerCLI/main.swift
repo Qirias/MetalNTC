@@ -48,8 +48,6 @@ let OFFSET_W3   = OFFSET_B2 + K_HIDDEN
 let OFFSET_B3   = OFFSET_W3 + K_HIDDEN * K_OUT_MAX
 let TOTAL       = OFFSET_B3 + K_OUT_MAX
 
-
-
 //   level 0 (grids 0,1 = 1024, 512):  mips 0-3     res 4096, 2048, 1024, 512
 //   level 1 (grids 2,3 = 256, 128):   mips 4-6     res 256, 128, 64
 //   level 2 (grids 4,5 = 64, 32):     mips 7-9     res 32, 16, 8
@@ -402,6 +400,7 @@ if QUANT.q > 0 {
 }
 
 stepConstsPtr.pointee.adamOffset = UInt32(OFFSET_MLP)
+stepConstsPtr.pointee.q = 0
 
 let nFineTune = BITS != 0 ? nSteps / 20 : 0 // 5% fine tuning as in the nvidia paper
 let mlpSlots = TOTAL - OFFSET_MLP
