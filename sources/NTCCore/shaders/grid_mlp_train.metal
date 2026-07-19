@@ -2,13 +2,6 @@
 #include "common.h"
 using namespace metal;
 
-#define K_HIDDEN 64
-
-#define SRC_W 4096
-#define SRC_H 4096
-
-#define F_TOTAL   (2 * F_PER_GRID)
-#define F_IN      (F_TOTAL + PE_DIM + 1)
 #define POS_SCALE (float(SRC_W) / 8.0f)
 
 #define SAMPLE_X      0

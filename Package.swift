@@ -13,7 +13,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "NTCShared",
+            path: "sources/NTCShared",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "NTCCore",
+            dependencies: ["NTCShared"],
             path: "sources/NTCCore",
             resources: [.process("shaders")],
         ),
@@ -24,7 +30,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "NTCTrainerCLI",
-            dependencies: ["NTCAssets", "NTCCore"],
+            dependencies: ["NTCAssets", "NTCCore", "NTCShared"],
             path: "sources/NTCTrainerCLI"
         ),
         .testTarget(

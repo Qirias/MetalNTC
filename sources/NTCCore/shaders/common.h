@@ -1,18 +1,7 @@
 #pragma once
 
-#include <metal_stdlib>
+#include "../../NTCShared/include/ntc_constants.h"
 using namespace metal;
-
-constant int SCALE = 1 << 24;
-
-#define PE_WAVES 3
-#define PE_DIM   (4 * PE_WAVES)
-
-#define K_GRIDS     8
-#define F_PER_GRID  8
-#define MAX_LODS    13
-
-#define K_OUT_MAX 16
 
 struct SPDConstants {
     uint numWorkgroups;

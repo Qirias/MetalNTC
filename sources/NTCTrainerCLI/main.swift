@@ -1,24 +1,13 @@
 import NTCCore
 import NTCAssets
+import NTCShared
 import Metal
 import Foundation
-
-let K_GRIDS     = 8
-let F_PER_GRID  = 8
-let MAX_LODS    = 13
 
 let PYRAMID_SIZES: [Int] = [1024, 512, 256, 128, 64, 32, 16, 8]
 precondition(PYRAMID_SIZES.count == K_GRIDS)
 
 let PYRAMID_SLOT_FLOATS: [Int] = PYRAMID_SIZES.map { $0 * $0 * F_PER_GRID }
-
-let F_TOTAL = 2 * F_PER_GRID
-
-let PE_WAVES = 3
-let PE_DIM   = 4 * PE_WAVES
-let F_IN     = F_TOTAL + PE_DIM + 1
-
-let K_HIDDEN = 64
 
 let defaultManifest = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/manifest.json"
 let manifestPath    = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultManifest
@@ -27,12 +16,8 @@ let textureSet      = try TextureSet(manifestURL: manifestURL)
 
 let N_MATERIAL_SLICES = textureSet.slots.count
 let K_OUT             = textureSet.kOut
-let K_OUT_MAX         = 16
 precondition(K_OUT <= K_OUT_MAX, "K_OUT (\(K_OUT)) exceeds K_OUT_MAX (\(K_OUT_MAX))")
 let K_BATCH = 4096
-
-let SRC_W = 4096
-let SRC_H = 4096
 
 let BITS: UInt32 = 8
 

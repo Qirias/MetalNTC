@@ -2,13 +2,9 @@
 #include "common.h"
 using namespace metal;
 
-#define K_HIDDEN 64
-
 #define OUT_W 4096
 #define OUT_H 4096
 
-#define F_TOTAL   (2 * F_PER_GRID)
-#define F_IN      (F_TOTAL + PE_DIM + 1)
 #define POS_SCALE (float(OUT_W) / 8.0f)
 
 kernel void grid_mlp_infer(device   const       float*          params  [[buffer(0)]],
