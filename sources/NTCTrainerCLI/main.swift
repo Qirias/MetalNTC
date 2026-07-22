@@ -3,6 +3,7 @@ import NTCAssets
 import NTCShared
 import Metal
 import Foundation
+import QuartzCore
 
 let PYRAMID_SIZES: [Int] = [1024, 512, 256, 128, 64, 32, 16, 8]
 precondition(PYRAMID_SIZES.count == K_GRIDS)
@@ -335,6 +336,8 @@ let BETA2: Float = 0.999
 let LR: Float = 1e-3
 let lodMax = pyramidBuilder.mipCount - 2
 
+let tTrainStart = CACurrentMediaTime()
+
 for step in 0..<nSteps {
     event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
@@ -389,6 +392,10 @@ for step in 0..<nSteps {
 }
 
 event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
+
+let tTrainEnd = CACurrentMediaTime()
+let trainDT = tTrainEnd - tTrainStart
+print(String(format: "TRAIN  %d steps in %.3f s ", nSteps, trainDT))
 
 // in a later stage we will first pack to uint8_t (using QUANT.q) in the .ntc file and then
 // unpack it. The MLP has to be fine tuned with the loss of this procedure, so for now we simulate it

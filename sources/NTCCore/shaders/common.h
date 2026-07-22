@@ -37,6 +37,10 @@ inline float hard_gelu(float x) {
     return 0.5f * x * (1.0f + clamp(x * 0.5f, -1.0f, 1.0f));
 }
 
+inline half hard_gelu(half x) {
+    return 0.5h * x * (1.0h + clamp(x * 0.5h, -1.0h, 1.0h));
+}
+
 // https://en.wikipedia.org/wiki/Product_rule
 // derived from the product rule on out = 0.5 * x * (1 + c)
 // where c = clamp(x/2, -1, 1):
@@ -114,34 +118,39 @@ inline void mlp_forward(device const float* params,
                         uint off_w3, uint off_b3,
                         uint fan_in, uint hidden, uint out_dim,
                         thread const float* features,
-                        thread float* pre1, thread float* hid1,
-                        thread float* pre2, thread float* hid2,
-                        thread float* pred) {
+                        thread half* pre1, thread half* hid1,
+                        thread half* pre2, thread half* hid2,
+                        thread half* pred) {
+    half feat_h[F_IN];
+    for (uint i = 0; i < fan_in; i++) {
+        feat_h[i] = half(features[i]);
+    }
+
     // Linear1 + hardGELU
     for (uint h = 0; h < hidden; h++) {
-        float acc = params[off_b1 + h];
+        half acc = half(params[off_b1 + h]);
         for (uint i = 0; i < fan_in; i++) {
-            acc += params[off_w1 + i * hidden + h] * features[i];
+            acc += half(params[off_w1 + i * hidden + h]) * feat_h[i];
         }
         pre1[h] = acc;
-        hid1[h] = hard_gelu(pre1[h]);
+        hid1[h] = hard_gelu(acc);
     }
 
     // Linear2 + hardGELU
     for (uint h = 0; h < hidden; h++) {
-        float acc = params[off_b2 + h];
+        half acc = half(params[off_b2 + h]);
         for (uint i = 0; i < hidden; i++) {
-            acc += params[off_w2 + i * hidden + h] * hid1[i];
+            acc += half(params[off_w2 + i * hidden + h]) * hid1[i];
         }
         pre2[h] = acc;
-        hid2[h] = hard_gelu(pre2[h]);
+        hid2[h] = hard_gelu(acc);
     }
 
     // Linear3
     for (uint k = 0; k < out_dim; k++) {
-        float acc = params[off_b3 + k];
+        half acc = half(params[off_b3 + k]);
         for (uint h = 0; h < hidden; h++) {
-            acc += params[off_w3 + h * out_dim + k] * hid2[h];
+            acc += half(params[off_w3 + h * out_dim + k]) * hid2[h];
         }
         pred[k] = acc;
     }

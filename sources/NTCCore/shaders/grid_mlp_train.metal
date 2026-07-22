@@ -46,7 +46,7 @@ kernel void grid_mlp_train(device               float*                          
     }
 
     uint neural_mip = consts.neuralMipForLod[lod];
-    
+
     uint g0_offset  = consts.pyramidOffsets[neural_mip];
     uint g1_offset  = consts.pyramidOffsets[neural_mip + 1];
     uint g0_size    = consts.pyramidSizes[neural_mip];
@@ -58,7 +58,7 @@ kernel void grid_mlp_train(device               float*                          
     int iy0_0 = min(int(floor(iy0)), int(g0_size) - 2);
     float fx0 = ix0 - float(ix0_0);
     float fy0 = iy0 - float(iy0_0);
-    
+
     // G1
     float ix1 = float(x) * float(g1_size - 1) / float(srcWL - 1);;
     float iy1 = float(y) * float(g1_size - 1) / float(srcHL - 1);
@@ -81,15 +81,15 @@ kernel void grid_mlp_train(device               float*                          
     pe_encode(posf, features + F_TOTAL);
 
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
-    
+
     // ========
     // Forward
     // ========
-    float pre1[K_HIDDEN];
-    float pre2[K_HIDDEN];
-    float hid1[K_HIDDEN];
-    float hid2[K_HIDDEN];
-    float pred[K_OUT_MAX];
+    half pre1[K_HIDDEN];
+    half pre2[K_HIDDEN];
+    half hid1[K_HIDDEN];
+    half hid2[K_HIDDEN];
+    half pred[K_OUT_MAX];
     mlp_forward(params,
                 consts.offsetW1, consts.offsetB1,
                 consts.offsetW2, consts.offsetB2,
@@ -98,19 +98,19 @@ kernel void grid_mlp_train(device               float*                          
                 features,
                 pre1, hid1, pre2, hid2, pred);
 
-    // Loss + d_pred
+    // Loss + d_pred (in float)
     float diff[K_OUT_MAX];
     float d_pred[K_OUT_MAX];
     float loss = 0;
     for (uint k = 0; k < consts.kOut; k++) {
-        diff[k] = pred[k] - gt[k];
+        diff[k] = float(pred[k]) - gt[k];
         loss += diff[k]*diff[k];
         d_pred[k] = 2 * diff[k] / float(consts.kOut) / float(consts.kBatch);
     }
     samples[sample_base + SAMPLE_LOSS] = loss / float(consts.kOut);
 
     // ========
-    // Backward
+    // Backward (float compute and half weight/activation loads)
     // ========
     // Linear3
     float d_hid2[K_HIDDEN];
@@ -123,18 +123,19 @@ kernel void grid_mlp_train(device               float*                          
     }
 
     for (uint h = 0; h < K_HIDDEN; h++) {
+        float hid2_f = float(hid2[h]);
         for (uint k = 0; k < consts.kOut; k++) {
-            atomic_add_fixed(&grads[consts.offsetW3 + h * K_OUT_MAX + k], d_pred[k] * hid2[h]);
+            atomic_add_fixed(&grads[consts.offsetW3 + h * K_OUT_MAX + k], d_pred[k] * hid2_f);
             d_hid2[h] += params[consts.offsetW3 + h * K_OUT_MAX + k] * d_pred[k];
         }
     }
-    
+
     // hardGELU
     float d_pre2[K_HIDDEN];
     for (uint h = 0; h < K_HIDDEN; h++) {
-        d_pre2[h] = d_hid2[h] * hard_gelu_prime(pre2[h]);
+        d_pre2[h] = d_hid2[h] * hard_gelu_prime(float(pre2[h]));
     }
-    
+
     // Linear2
     float d_hid1[K_HIDDEN];
     for (uint h = 0; h < K_HIDDEN; h++) {
@@ -146,8 +147,9 @@ kernel void grid_mlp_train(device               float*                          
     }
 
     for (uint h = 0; h < K_HIDDEN; h++) {
+        float hid1_f = float(hid1[h]);
         for (uint k = 0; k < K_HIDDEN; k++) {
-            atomic_add_fixed(&grads[consts.offsetW2 + h * K_HIDDEN + k], d_pre2[k] * hid1[h]);
+            atomic_add_fixed(&grads[consts.offsetW2 + h * K_HIDDEN + k], d_pre2[k] * hid1_f);
             d_hid1[h] += params[consts.offsetW2 + h * K_HIDDEN + k] * d_pre2[k];
         }
     }
@@ -155,7 +157,7 @@ kernel void grid_mlp_train(device               float*                          
     // hardGELU
     float d_pre1[K_HIDDEN];
     for (uint h = 0; h < K_HIDDEN; h++) {
-        d_pre1[h] = d_hid1[h] * hard_gelu_prime(pre1[h]);
+        d_pre1[h] = d_hid1[h] * hard_gelu_prime(float(pre1[h]));
     }
 
     // Linear1

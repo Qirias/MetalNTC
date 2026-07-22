@@ -60,13 +60,13 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
 
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
     // ========
-    // Forward
+    // Forward (FP16)
     // ========
-    float pre1[K_HIDDEN];
-    float pre2[K_HIDDEN];
-    float hid1[K_HIDDEN];
-    float hid2[K_HIDDEN];
-    float pred[K_OUT_MAX];
+    half pre1[K_HIDDEN];
+    half pre2[K_HIDDEN];
+    half hid1[K_HIDDEN];
+    half hid2[K_HIDDEN];
+    half pred[K_OUT_MAX];
     mlp_forward(params,
                 consts.offsetW1, consts.offsetB1,
                 consts.offsetW2, consts.offsetB2,
@@ -76,6 +76,6 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
                 pre1, hid1, pre2, hid2, pred);
 
     for (uint k = 0; k < consts.kOut; k++) {
-        output[out_base + k] = pred[k];
+        output[out_base + k] = float(pred[k]);
     }
 }
