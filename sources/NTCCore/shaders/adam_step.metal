@@ -7,7 +7,8 @@ constant float BETA2 = 0.999f;
 constant float EPS   = 1e-8f;
 
 struct AdamConstants {
-    float lr;
+    float lrGrid;
+    float lrMlp;
     float bc1;
     float bc2;
 };
@@ -33,7 +34,8 @@ kernel void adam_step(device            float*          params      [[buffer(0)]
 
     float m_hat = m_new / adamConsts.bc1;
     float v_hat = v_new / adamConsts.bc2;
-    params[slot] -= adamConsts.lr * m_hat / (sqrt(v_hat) + EPS);
+    float lr = slot < stepConsts.pyramidOffsets[K_GRIDS] ? adamConsts.lrGrid : adamConsts.lrMlp;
+    params[slot] -= lr * m_hat / (sqrt(v_hat) + EPS);
 
     if (stepConsts.bits != 0u && slot < stepConsts.pyramidOffsets[K_GRIDS]) {
         params[slot] = clamp(params[slot], stepConsts.lo, stepConsts.hi);

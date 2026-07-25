@@ -5,3 +5,4 @@ misc/
 .swiftpm/
 Package.resolved
 *.png
+*.ntc

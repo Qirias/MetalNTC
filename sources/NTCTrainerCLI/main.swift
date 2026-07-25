@@ -145,9 +145,10 @@ memset(mBuffer.contents(), 0, TOTAL * MemoryLayout<Float>.stride)
 memset(vBuffer.contents(), 0, TOTAL * MemoryLayout<Float>.stride)
 
 struct AdamConstants {
-    var lr: Float;
-    var bc1: Float;
-    var bc2: Float
+    var lrGrid: Float;
+    var lrMlp:  Float;
+    var bc1:    Float;
+    var bc2:    Float
 }
 
 let adamConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<AdamConstants>.stride,
@@ -341,28 +342,52 @@ let logEvery = 100
 var t: UInt32 = 0
 let BETA1: Float = 0.9
 let BETA2: Float = 0.999
-let LR: Float = 1e-3
+let LR_GRID_MAX: Float = 0.01
+let LR_MLP_MAX:  Float = 0.005
+let UNIFORM_LOD_FRACTION: Float = 0.05
 let lodMax = pyramidBuilder.mipCount - 2
+
+// cosine annealing to 0 across [0, total)
+func cosineLr(step: Int, total: Int, lrMax: Float) -> Float {
+    let denom = Float(max(total - 1, 1))
+    let t = Float(step) / denom
+    return lrMax * 0.5 * (1.0 + cosf(.pi * t))
+}
+
+// choose randomly a level proportionally to the mip level's area by sampling
+// from an exponential distribution. To mitigate undersampling of low resolution
+// mip levels, 5% of the batches sample their LOD from a uniform distribution
+// of the entire range of the mip chain
+func sampleBatchLod(lodMax: Int) -> Int {
+    if Float.random(in: 0..<1) < UNIFORM_LOD_FRACTION {
+        return Int.random(in: 0..<lodMax)
+    }
+    let x = Float.random(in: Float.leastNormalMagnitude..<1.0)
+    let lod = Int(floor(-logf(x) / logf(4.0)))
+    return min(max(lod, 0), lodMax - 1)
+}
 
 let tTrainStart = CACurrentMediaTime()
 
 for step in 0..<nSteps {
     event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
+    let batchLod = sampleBatchLod(lodMax: lodMax)
+    let wL = SRC_W >> batchLod
+    let hL = SRC_H >> batchLod
     for s in 0..<K_BATCH {
         let base = s * SAMPLE_STRIDE
-        let lod = Int.random(in: 0..<lodMax)
-        let wL  = SRC_W >> lod
-        let hL  = SRC_H >> lod
         samplesFloats[base + SAMPLE_X]   = Float(Int.random(in: 0..<wL))
         samplesFloats[base + SAMPLE_Y]   = Float(Int.random(in: 0..<hL))
-        samplesFloats[base + SAMPLE_LOD] = Float(lod)
+        samplesFloats[base + SAMPLE_LOD] = Float(batchLod)
     }
 
     t += 1
     let bc1 = 1.0 - powf(BETA1, Float(t))
     let bc2 = 1.0 - powf(BETA2, Float(t))
-    adamConstsPtr.pointee = AdamConstants(lr: LR, bc1: bc1, bc2: bc2)
+    let lrGrid = cosineLr(step: step, total: nSteps, lrMax: LR_GRID_MAX)
+    let lrMlp  = cosineLr(step: step, total: nSteps, lrMax: LR_MLP_MAX)
+    adamConstsPtr.pointee = AdamConstants(lrGrid: lrGrid, lrMlp: lrMlp, bc1: bc1, bc2: bc2)
     
     let cmd = ctx.device.makeCommandBuffer()!
     cmd.beginCommandBuffer(allocator: ctx.allocator)
@@ -428,20 +453,22 @@ let mlpSlots = TOTAL - OFFSET_MLP
 for step in 0..<nFineTune {
     event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
+    let batchLod = sampleBatchLod(lodMax: lodMax)
+    let wL = SRC_W >> batchLod
+    let hL = SRC_H >> batchLod
     for s in 0..<K_BATCH {
         let base = s * SAMPLE_STRIDE
-        let lod = Int.random(in: 0..<lodMax)
-        let wL  = SRC_W >> lod
-        let hL  = SRC_H >> lod
         samplesFloats[base + SAMPLE_X]   = Float(Int.random(in: 0..<wL))
         samplesFloats[base + SAMPLE_Y]   = Float(Int.random(in: 0..<hL))
-        samplesFloats[base + SAMPLE_LOD] = Float(lod)
+        samplesFloats[base + SAMPLE_LOD] = Float(batchLod)
     }
 
     t += 1
     let bc1 = 1.0 - powf(BETA1, Float(t))
     let bc2 = 1.0 - powf(BETA2, Float(t))
-    adamConstsPtr.pointee = AdamConstants(lr: LR, bc1: bc1, bc2: bc2)
+    // grid frozen (adamOffset = OFFSET_MLP), so lrGrid is unused
+    let lrMlp = cosineLr(step: step, total: nFineTune, lrMax: LR_MLP_MAX)
+    adamConstsPtr.pointee = AdamConstants(lrGrid: 0, lrMlp: lrMlp, bc1: bc1, bc2: bc2)
 
     let cmd = ctx.device.makeCommandBuffer()!
     cmd.beginCommandBuffer(allocator: ctx.allocator)
