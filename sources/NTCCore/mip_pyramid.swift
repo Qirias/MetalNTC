@@ -46,11 +46,13 @@ public final class MipPyramidBuilder {
         desc.usage            = [.shaderRead, .shaderWrite]
         desc.storageMode      = .shared
         self.pyramidTexture   = ctx.device.makeTexture(descriptor: desc)!
+        self.pyramidTexture.label = "SPD.pyramid"
 
         self.pso = try ctx.makeComputePipelineState(function: "downsample_2x2")
 
         self.constsBuffer = ctx.device.makeBuffer(length: MemoryLayout<SPDConstants>.stride,
                                                   options: .storageModeShared)!
+        self.constsBuffer.label = "SPD.consts"
         var consts = SPDConstants()
         let wgX = (srcW + 64 - 1) / 64
         let wgY = (srcH + 64 - 1) / 64
@@ -63,6 +65,7 @@ public final class MipPyramidBuilder {
 
         self.atomicBuffer = ctx.device.makeBuffer(length: MemoryLayout<UInt32>.stride,
                                                   options: .storageModeShared)!
+        self.atomicBuffer.label = "SPD.workgroupCounter"
         memset(atomicBuffer.contents(), 0, MemoryLayout<UInt32>.stride)
 
         let argDesc = MTL4ArgumentTableDescriptor()

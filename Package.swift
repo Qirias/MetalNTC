@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "NTCCore",   targets: ["NTCCore"]),
         .library(name: "NTCAssets", targets: ["NTCAssets"]),
         .executable(name: "NTCTrainerCLI", targets: ["NTCTrainerCLI"]),
+        .executable(name: "NTCRenderer",   targets: ["NTCRenderer"]),
     ],
     targets: [
         .target(
@@ -32,6 +33,12 @@ let package = Package(
             name: "NTCTrainerCLI",
             dependencies: ["NTCAssets", "NTCCore", "NTCShared"],
             path: "sources/NTCTrainerCLI"
+        ),
+        .executableTarget(
+            name: "NTCRenderer",
+            dependencies: ["NTCCore", "NTCShared"],
+            path: "sources/NTCRenderer",
+            resources: [.process("shaders")]
         ),
         .testTarget(
             name: "NTCCoreTests",

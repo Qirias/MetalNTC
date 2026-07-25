@@ -3,6 +3,8 @@
 #include "../../NTCShared/include/ntc_constants.h"
 using namespace metal;
 
+#define POS_SCALE (float(SRC_W) / 8.0f)
+
 struct SPDConstants {
     uint numWorkgroups;
     uint mipCount;
@@ -154,4 +156,183 @@ inline void mlp_forward(device const float* params,
         }
         pred[k] = acc;
     }
+}
+
+inline void bilinear_sample_u8(device const uchar* grid,
+                               uint W, uint F,
+                               int ix0, int iy0, float fx, float fy,
+                               thread float* w,
+                               thread uint*  c,
+                               thread float* features,
+                               float q) {
+    w[0] = (1.0f - fx) * (1.0f - fy);
+    w[1] =         fx  * (1.0f - fy);
+    w[2] = (1.0f - fx) *         fy;
+    w[3] =         fx  *         fy;
+
+    c[0] = (uint(iy0)     * W + uint(ix0))     * F;
+    c[1] = (uint(iy0)     * W + uint(ix0 + 1)) * F;
+    c[2] = (uint(iy0 + 1) * W + uint(ix0))     * F;
+    c[3] = (uint(iy0 + 1) * W + uint(ix0 + 1)) * F;
+
+    for (uint feat = 0; feat < F; feat++) {
+        float acc = 0;
+        for (uint corner = 0; corner < 4; corner++) {
+            acc += w[corner] * float(grid[c[corner] + feat]);
+        }
+        features[feat] = (acc - 128.0f) * q;
+    }
+}
+
+inline void mlp_forward_h(device const half* mlp,
+                          uint off_w1, uint off_b1,
+                          uint off_w2, uint off_b2,
+                          uint off_w3, uint off_b3,
+                          uint fan_in, uint hidden, uint out_dim,
+                          thread const float* features,
+                          thread half* pre1, thread half* hid1,
+                          thread half* pre2, thread half* hid2,
+                          thread half* pred) {
+    half feat_h[F_IN];
+    for (uint i = 0; i < fan_in; i++) {
+        feat_h[i] = half(features[i]);
+    }
+
+    // Linear1 + hardGELU
+    for (uint h = 0; h < hidden; h++) {
+        half acc = mlp[off_b1 + h];
+        for (uint i = 0; i < fan_in; i++) {
+            acc += mlp[off_w1 + i * hidden + h] * feat_h[i];
+        }
+        pre1[h] = acc;
+        hid1[h] = hard_gelu(acc);
+    }
+
+    // Linear2 + hardGELU
+    for (uint h = 0; h < hidden; h++) {
+        half acc = mlp[off_b2 + h];
+        for (uint i = 0; i < hidden; i++) {
+            acc += mlp[off_w2 + i * hidden + h] * hid1[i];
+        }
+        pre2[h] = acc;
+        hid2[h] = hard_gelu(acc);
+    }
+
+    // Linear3
+    for (uint k = 0; k < out_dim; k++) {
+        half acc = mlp[off_b3 + k];
+        for (uint h = 0; h < hidden; h++) {
+            acc += mlp[off_w3 + h * out_dim + k] * hid2[h];
+        }
+        pred[k] = acc;
+    }
+}
+
+inline void ntc_decode_quant(float2                   uv,
+                             uint                     lod,
+                             device const uchar*      grid,
+                             device const half*       mlp,
+                             constant StepConstants&  consts,
+                             thread half*             pred) {
+    uint neural_mip = consts.neuralMipForLod[lod];
+    uint g0_offset  = consts.pyramidOffsets[neural_mip];
+    uint g1_offset  = consts.pyramidOffsets[neural_mip + 1];
+    uint g0_size    = consts.pyramidSizes[neural_mip];
+    uint g1_size    = consts.pyramidSizes[neural_mip + 1];
+
+    float ix0   = uv.x * float(g0_size - 1);
+    float iy0   = uv.y * float(g0_size - 1);
+    int   ix0_0 = min(int(floor(ix0)), int(g0_size) - 2);
+    int   iy0_0 = min(int(floor(iy0)), int(g0_size) - 2);
+    float fx0   = ix0 - float(ix0_0);
+    float fy0   = iy0 - float(iy0_0);
+
+    float ix1   = uv.x * float(g1_size - 1);
+    float iy1   = uv.y * float(g1_size - 1);
+    int   ix0_1 = min(int(floor(ix1)), int(g1_size) - 2);
+    int   iy0_1 = min(int(floor(iy1)), int(g1_size) - 2);
+    float fx1   = ix1 - float(ix0_1);
+    float fy1   = iy1 - float(iy0_1);
+
+    float w0[4]; float w1[4];
+    uint  c0[4]; uint  c1[4];
+    float features[F_IN];
+
+    bilinear_sample_u8(grid + g0_offset, g0_size, F_PER_GRID,
+                       ix0_0, iy0_0, fx0, fy0,
+                       w0, c0, features, consts.q);
+    bilinear_sample_u8(grid + g1_offset, g1_size, F_PER_GRID,
+                       ix0_1, iy0_1, fx1, fy1,
+                       w1, c1, features + F_PER_GRID, consts.q);
+
+    float2 posf = uv * POS_SCALE;
+    pe_encode(posf, features + F_TOTAL);
+    features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
+
+    half pre1[K_HIDDEN];
+    half pre2[K_HIDDEN];
+    half hid1[K_HIDDEN];
+    half hid2[K_HIDDEN];
+    mlp_forward_h(mlp,
+                  consts.offsetW1, consts.offsetB1,
+                  consts.offsetW2, consts.offsetB2,
+                  consts.offsetW3, consts.offsetB3,
+                  F_IN, K_HIDDEN, K_OUT_MAX,
+                  features,
+                  pre1, hid1, pre2, hid2, pred);
+}
+
+inline void ntc_decode(float2                    uv,
+                       uint                      lod,
+                       device const float*       params,
+                       constant StepConstants&   consts,
+                       thread half*              pred) {
+    uint neural_mip = consts.neuralMipForLod[lod];
+    uint g0_offset  = consts.pyramidOffsets[neural_mip];
+    uint g1_offset  = consts.pyramidOffsets[neural_mip + 1];
+    uint g0_size    = consts.pyramidSizes[neural_mip];
+    uint g1_size    = consts.pyramidSizes[neural_mip + 1];
+
+    float ix0   = uv.x * float(g0_size - 1);
+    float iy0   = uv.y * float(g0_size - 1);
+    int   ix0_0 = min(int(floor(ix0)), int(g0_size) - 2);
+    int   iy0_0 = min(int(floor(iy0)), int(g0_size) - 2);
+    float fx0   = ix0 - float(ix0_0);
+    float fy0   = iy0 - float(iy0_0);
+
+    float ix1   = uv.x * float(g1_size - 1);
+    float iy1   = uv.y * float(g1_size - 1);
+    int   ix0_1 = min(int(floor(ix1)), int(g1_size) - 2);
+    int   iy0_1 = min(int(floor(iy1)), int(g1_size) - 2);
+    float fx1   = ix1 - float(ix0_1);
+    float fy1   = iy1 - float(iy0_1);
+
+    float w0[4]; float w1[4];
+    uint  c0[4]; uint  c1[4];
+    float features[F_IN];
+
+    bilinear_sample(params + g0_offset, g0_size, F_PER_GRID,
+                    ix0_0, iy0_0, fx0, fy0,
+                    w0, c0, features,
+                    0.0f, 0u);
+    bilinear_sample(params + g1_offset, g1_size, F_PER_GRID,
+                    ix0_1, iy0_1, fx1, fy1,
+                    w1, c1, features + F_PER_GRID,
+                    0.0f, 0u);
+
+    float2 posf = uv * POS_SCALE;
+    pe_encode(posf, features + F_TOTAL);
+    features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
+
+    half pre1[K_HIDDEN];
+    half pre2[K_HIDDEN];
+    half hid1[K_HIDDEN];
+    half hid2[K_HIDDEN];
+    mlp_forward(params,
+                consts.offsetW1, consts.offsetB1,
+                consts.offsetW2, consts.offsetB2,
+                consts.offsetW3, consts.offsetB3,
+                F_IN, K_HIDDEN, K_OUT_MAX,
+                features,
+                pre1, hid1, pre2, hid2, pred);
 }

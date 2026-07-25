@@ -73,14 +73,17 @@ let adamPso   = try ctx.makeComputePipelineState(function: "adam_step")
 
 let paramsBuffer = ctx.device.makeBuffer(length: TOTAL * 2 * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
+paramsBuffer.label = "NTC.params"
 let paramsFloats = paramsBuffer.contents().bindMemory(to: Float.self, capacity: TOTAL * 2)
 
 let samplesBuffer = ctx.device.makeBuffer(length: K_BATCH * SAMPLE_STRIDE * MemoryLayout<Float>.stride,
                                           options: .storageModeShared)!
+samplesBuffer.label = "NTC.trainSamples"
 let samplesFloats = samplesBuffer.contents().bindMemory(to: Float.self, capacity: K_BATCH * SAMPLE_STRIDE)
 
 let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * K_OUT * MemoryLayout<Float>.stride,
                                          options: .storageModeShared)!
+outputBuffer.label = "NTC.inferOutput"
 
 let sourceTexDesc = MTLTextureDescriptor()
 sourceTexDesc.textureType     = .type2DArray
@@ -92,6 +95,7 @@ sourceTexDesc.mipmapLevelCount = 1
 sourceTexDesc.usage           = [.shaderRead]
 sourceTexDesc.storageMode     = .shared
 let sourceTexture = ctx.device.makeTexture(descriptor: sourceTexDesc)!
+sourceTexture.label = "NTC.sourceMaterials"
 
 func packRGBA(_ img: LoadedImage) -> [SIMD4<Float>] {
     precondition(img.channels == 1 || img.channels == 3)
@@ -133,8 +137,10 @@ let pyramidBuilder = try MipPyramidBuilder(ctx: ctx, srcW: SRC_W, srcH: SRC_H, s
 
 let mBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                     options: .storageModeShared)!
+mBuffer.label = "Adam.m"
 let vBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                     options: .storageModeShared)!
+vBuffer.label = "Adam.v"
 memset(mBuffer.contents(), 0, TOTAL * MemoryLayout<Float>.stride)
 memset(vBuffer.contents(), 0, TOTAL * MemoryLayout<Float>.stride)
 
@@ -146,6 +152,7 @@ struct AdamConstants {
 
 let adamConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<AdamConstants>.stride,
                                              options: .storageModeShared)!
+adamConstsBuffer.label = "Adam.consts"
 let adamConstsPtr = adamConstsBuffer.contents().bindMemory(to: AdamConstants.self, capacity: 1)
 
 struct StepConstants {
@@ -188,6 +195,7 @@ struct StepConstants {
 
 let stepConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<StepConstants>.stride,
                                              options: .storageModeShared)!
+stepConstsBuffer.label = "NTC.stepConsts"
 let stepConstsPtr = stepConstsBuffer.contents().bindMemory(to: StepConstants.self, capacity: 1)
 stepConstsPtr.pointee = StepConstants(
     kBatch:             UInt32(K_BATCH),
@@ -397,12 +405,17 @@ let tTrainEnd = CACurrentMediaTime()
 let trainDT = tTrainEnd - tTrainStart
 print(String(format: "TRAIN  %d steps in %.3f s ", nSteps, trainDT))
 
-// in a later stage we will first pack to uint8_t (using QUANT.q) in the .ntc file and then
-// unpack it. The MLP has to be fine tuned with the loss of this procedure, so for now we simulate it
-// by doing both operations here
+// keep the bytes for writeNTC and dequantize
+// back into paramsFloats so the MLP fine-tunes against the values the decoder
+// will actually see at inference. Grid stays frozen for the rest of this run.
+var gridBytes = [UInt8](repeating: 0, count: OFFSET_MLP)
 if QUANT.q > 0 {
+    let invQ = 1.0 / QUANT.q
     for j in 0..<OFFSET_MLP {
-        paramsFloats[j] = (paramsFloats[j] / QUANT.q).rounded() * QUANT.q
+        let coded   = Int((paramsFloats[j] * invQ).rounded()) + 128
+        let clamped = max(0, min(255, coded))
+        gridBytes[j]    = UInt8(clamped)
+        paramsFloats[j] = Float(clamped - 128) * QUANT.q
     }
 }
 
@@ -467,6 +480,38 @@ for step in 0..<nFineTune {
 
 event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
 
+
+// pack + write the .ntc file
+let ntcSlots: [NTCSlotInfo] = textureSet.slots.map {
+    NTCSlotInfo(semantic:      $0.semantic,
+                swizzle:       $0.swizzle,
+                channels:      $0.channels,
+                channelOffset: $0.channelOffset,
+                sliceIndex:    $0.sliceIndex,
+                isSRGB:        $0.isSRGB)
+}
+
+let ntcFile = packNTC(srcW: SRC_W, srcH: SRC_H, mipCount: mipCount,
+                      kGrids: K_GRIDS, fPerGrid: F_PER_GRID,
+                      kHidden: K_HIDDEN, kOutMax: K_OUT_MAX, kOut: K_OUT,
+                      peWaves: PE_WAVES,
+                      quantScale: QUANT.q, quantBits: Int(BITS),
+                      pyramidSizes: PYRAMID_SIZES,
+                      neuralMipsForLod: Array(NM_FOR_LOD.prefix(mipCount)),
+                      slots: ntcSlots,
+                      gridBytes: gridBytes,
+                      mlpFloats:  paramsFloats.advanced(by: OFFSET_MLP))
+
+let ntcURL = textureSet.manifestDir.appendingPathComponent("compressed.ntc")
+try writeNTC(ntcFile, to: ntcURL)
+
+let ntcBytes = 64
+              + ntcFile.pyramidSizes.count * 4
+              + ntcFile.neuralMipsForLod.count * 4
+              + ntcFile.slots.count * 32
+              + ntcFile.grid.count
+              + ntcFile.mlp.count * 2
+print(String(format: "wrote %@  (%d bytes = %.2f MB)", ntcURL.path, ntcBytes, Double(ntcBytes) / (1024 * 1024)))
 
 // infer all mips and write them to two [4096+2048, 4096] texture atlases
 let ATLAS_W = SRC_W + SRC_W / 2
