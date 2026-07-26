@@ -6,3 +6,5 @@ misc/
 Package.resolved
 *.png
 *.ntc
+*.gltf
+*.bin
