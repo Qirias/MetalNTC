@@ -3,8 +3,6 @@
 #include "../../NTCShared/include/ntc_constants.h"
 using namespace metal;
 
-#define POS_SCALE (float(SRC_W) / 8.0f)
-
 struct SPDConstants {
     uint numWorkgroups;
     uint mipCount;
@@ -32,6 +30,10 @@ struct StepConstants {
     uint  nSlices;
     uint  sliceChannels       [K_OUT_MAX];
     uint  sliceChannelOffsets [K_OUT_MAX];
+    uint  srcW;
+    uint  srcH;
+    uint  mipCount;   // log2(srcW) + 1
+    float posScale;   // srcW / 8; base frequency of the positional encoding
 };
 
 // a cheap piecewise approximation of GELU
@@ -265,7 +267,7 @@ inline void ntc_decode_quant(float2                   uv,
                        ix0_1, iy0_1, fx1, fy1,
                        w1, c1, features + F_PER_GRID, consts.q);
 
-    float2 posf = uv * POS_SCALE;
+    float2 posf = uv * consts.posScale;
     pe_encode(posf, features + F_TOTAL);
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
 
@@ -320,7 +322,7 @@ inline void ntc_decode(float2                    uv,
                     w1, c1, features + F_PER_GRID,
                     0.0f, 0u);
 
-    float2 posf = uv * POS_SCALE;
+    float2 posf = uv * consts.posScale;
     pe_encode(posf, features + F_TOTAL);
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
 

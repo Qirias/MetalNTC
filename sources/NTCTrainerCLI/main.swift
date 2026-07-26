@@ -5,15 +5,36 @@ import Metal
 import Foundation
 import QuartzCore
 
-let PYRAMID_SIZES: [Int] = [1024, 512, 256, 128, 64, 32, 16, 8]
-precondition(PYRAMID_SIZES.count == K_GRIDS)
-
-let PYRAMID_SLOT_FLOATS: [Int] = PYRAMID_SIZES.map { $0 * $0 * F_PER_GRID }
-
-let defaultManifest = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG/manifest.json"
+let defaultManifest = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/SciFiHelmet/glTF/manifest.json"
 let manifestPath    = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultManifest
 let manifestURL     = URL(fileURLWithPath: manifestPath)
 let textureSet      = try TextureSet(manifestURL: manifestURL)
+
+let materialImages: [LoadedImage]
+let SRC_W: Int
+let SRC_H: Int
+(materialImages, SRC_W, SRC_H) = try textureSet.loadImages()
+
+struct PyramidPreset {
+    let sizes:  [Int]      // K_GRIDS grid resolutions, finest first
+    let mipMap: [UInt32]   // lod -> index of the first grid in its pair
+}
+
+let PYRAMID_PRESETS: [Int: PyramidPreset] = [
+    4096: PyramidPreset(sizes:  [1024, 512, 256, 128, 64, 32, 16, 8],
+                        mipMap: [0, 0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6, 6]),
+    2048: PyramidPreset(sizes:  [512, 256, 128, 64, 32, 16, 8, 4],
+                        mipMap: [0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6, 6,  6]),
+]
+
+guard let PRESET = PYRAMID_PRESETS[SRC_W] else {
+    fatalError("no pyramid preset for \(SRC_W)x\(SRC_H); add one to PYRAMID_PRESETS")
+}
+let PYRAMID_SIZES: [Int] = PRESET.sizes
+precondition(PYRAMID_SIZES.count == K_GRIDS)
+precondition(PRESET.mipMap.count == MAX_LODS)
+
+let PYRAMID_SLOT_FLOATS: [Int] = PYRAMID_SIZES.map { $0 * $0 * F_PER_GRID }
 
 let N_MATERIAL_SLICES = textureSet.slots.count
 let K_OUT             = textureSet.kOut
@@ -49,22 +70,18 @@ let OFFSET_W3   = OFFSET_B2 + K_HIDDEN
 let OFFSET_B3   = OFFSET_W3 + K_HIDDEN * K_OUT_MAX
 let TOTAL       = OFFSET_B3 + K_OUT_MAX
 
-//   level 0 (grids 0,1 = 1024, 512):  mips 0-3     res 4096, 2048, 1024, 512
-//   level 1 (grids 2,3 = 256, 128):   mips 4-6     res 256, 128, 64
-//   level 2 (grids 4,5 = 64, 32):     mips 7-9     res 32, 16, 8
-//   level 3 (grids 6,7 = 16, 8):      mips 10-12   res 4, 2, 1
-//
-// TODO: create preset tables for various resolutions
 let mipCount = Int(log2(Double(SRC_W))) + 1
-let NM_FOR_LOD: [UInt32] = [0, 0, 0, 0,   2, 2, 2,   4, 4, 4,   6, 6, 6]
+precondition(mipCount <= MAX_LODS, "mipCount \(mipCount) exceeds MAX_LODS (\(MAX_LODS))")
+
+let NM_FOR_LOD: [UInt32] = PRESET.mipMap
+
+let POS_SCALE = Float(SRC_W) / 8.0
 
 let SAMPLE_X      = 0
 let SAMPLE_Y      = 1
 let SAMPLE_LOD    = 2
 let SAMPLE_LOSS   = 3
 let SAMPLE_STRIDE = 4
-
-let materialImages: [LoadedImage] = try textureSet.loadImages(width: SRC_W, height: SRC_H)
 
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = try ctx.makeComputePipelineState(function: "grid_mlp_train")
@@ -192,6 +209,10 @@ struct StepConstants {
                               UInt32, UInt32, UInt32, UInt32,
                               UInt32, UInt32, UInt32, UInt32,
                               UInt32, UInt32, UInt32, UInt32)
+    var srcW:                UInt32
+    var srcH:                UInt32
+    var mipCount:            UInt32
+    var posScale:            Float
 }
 
 let stepConstsBuffer = ctx.device.makeBuffer(length: MemoryLayout<StepConstants>.stride,
@@ -229,7 +250,11 @@ stepConstsPtr.pointee = StepConstants(
     kOut:                UInt32(K_OUT),
     nSlices:             UInt32(N_MATERIAL_SLICES),
     sliceChannels:       (0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0),
-    sliceChannelOffsets: (0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0)
+    sliceChannelOffsets: (0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0),
+    srcW:                UInt32(SRC_W),
+    srcH:                UInt32(SRC_H),
+    mipCount:            UInt32(mipCount),
+    posScale:            POS_SCALE
 )
 
 withUnsafeMutablePointer(to: &stepConstsPtr.pointee.sliceChannels) { tup in
@@ -653,6 +678,7 @@ for lod in 0..<pyramidBuilder.mipCount {
 }
 
 let outDir = textureSet.manifestDir.appendingPathComponent("output")
+try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 for (si, slot) in textureSet.slots.enumerated() {
     let img = LoadedImage(pixels: atlases[si],
                           height: ATLAS_H,

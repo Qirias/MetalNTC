@@ -18,6 +18,12 @@ let package = Package(
             path: "sources/NTCShared",
             publicHeadersPath: "include"
         ),
+        // SwiftPM refuses to mix C++ and Swift sources in one target
+        .target(
+            name: "AAPLMath",
+            path: "sources/AAPLMath",
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "NTCCore",
             dependencies: ["NTCShared"],
@@ -36,9 +42,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "NTCRenderer",
-            dependencies: ["NTCCore", "NTCShared"],
+            dependencies: ["NTCCore", "NTCShared", "AAPLMath"],
             path: "sources/NTCRenderer",
-            resources: [.process("shaders")]
+            resources: [.process("shaders")],
+            swiftSettings: [.interoperabilityMode(.Cxx)]
         ),
         .testTarget(
             name: "NTCCoreTests",

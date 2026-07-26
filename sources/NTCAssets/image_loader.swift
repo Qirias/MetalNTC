@@ -7,7 +7,7 @@ public struct LoadedImage {
     public let height: Int
     public let width: Int
     public let channels: Int
-    
+
     public init(pixels: [Float], height: Int, width: Int, channels: Int) {
         self.pixels = pixels
         self.height = height
@@ -21,37 +21,31 @@ enum AssertError : Error {
     case decodeFailed(URL)
     case encodeFailed(URL)
     case unsupportedChannelCount(Int)
+    case badSwizzle(String)
     case contextCreationFailed
 }
 
-public func load_image(at url: URL, channels: Int) throws -> LoadedImage {
-    guard channels == 1 || channels == 3 else {
-        throw AssertError.unsupportedChannelCount(channels)
-    }
+/// Decoded RGBA8, normalized to [0,1]. Always 4 channels regardless of how many
+/// the file actually has -- CoreGraphics expands grayscale to R=G=B for us, so a
+/// swizzle of "R" reads correctly off both a gray AO map and an RGB packed map.
+public struct RGBAImage {
+    public let pixels: [Float]   // width * height * 4
+    public let width:  Int
+    public let height: Int
+}
+
+public func decode_rgba(at url: URL) throws -> RGBAImage {
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
         throw AssertError.fileNotFound(url)
     }
     guard let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
         throw AssertError.decodeFailed(url)
     }
-    
+
     let width  = img.width
     let height = img.height
 
-    let colorSpace: CGColorSpace
-    let bitmapInfo: UInt32
-    let bytesPerPixel: Int
-    if channels == 3 {
-        colorSpace    = CGColorSpaceCreateDeviceRGB()
-        bitmapInfo    = CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-        bytesPerPixel = 4
-    } else {
-        colorSpace    = CGColorSpaceCreateDeviceGray()
-        bitmapInfo    = CGImageAlphaInfo.none.rawValue
-        bytesPerPixel = 1
-    }
-
-    let bytesPerRow = width * bytesPerPixel
+    let bytesPerRow = width * 4
     var raw = [UInt8](repeating: 0, count: bytesPerRow * height)
 
     try raw.withUnsafeMutableBytes { buf in
@@ -61,33 +55,60 @@ public func load_image(at url: URL, channels: Int) throws -> LoadedImage {
             height: height,
             bitsPerComponent: 8,
             bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
         ) else {
             throw AssertError.contextCreationFailed
         }
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: width, height: height))
     }
-    
-    var pixels = [Float](repeating: 0, count: width * height * channels)
+
+    var pixels = [Float](repeating: 0, count: width * height * 4)
     let invScale: Float = 1.0 / 255.0
-    
-    if channels == 3 {
-        for i in 0 ..< height * width {
-            let src = i * 4
-            let dst = i * 3
-            pixels[dst    ] = Float(raw[src    ]) * invScale
-            pixels[dst + 1] = Float(raw[src + 1]) * invScale
-            pixels[dst + 2] = Float(raw[src + 2]) * invScale
-        }
-    } else {
-        for i in 0 ..< height * width {
-            pixels[i] = Float(raw[i]) * invScale
+    for i in 0 ..< (width * height * 4) {
+        pixels[i] = Float(raw[i]) * invScale
+    }
+
+    return RGBAImage(pixels: pixels, width: width, height: height)
+}
+
+/// Maps a swizzle character to its index in an RGBA pixel.
+func swizzle_index(_ c: Character) throws -> Int {
+    switch c {
+    case "R", "r": return 0
+    case "G", "g": return 1
+    case "B", "b": return 2
+    case "A", "a": return 3
+    default: throw AssertError.badSwizzle(String(c))
+    }
+}
+
+/// Pulls the named channels out of an already-decoded RGBA image. Lets one file
+/// on disk feed several semantics -- glTF packs roughness in G and metalness in
+/// B of a single metalRoughness texture, so both come from one decode.
+public func extract_swizzle(_ rgba: RGBAImage, swizzle: String) throws -> LoadedImage {
+    let channels = swizzle.count
+    guard channels == 1 || channels == 3 else {
+        throw AssertError.unsupportedChannelCount(channels)
+    }
+    let idx = try swizzle.map { try swizzle_index($0) }
+
+    let n = rgba.width * rgba.height
+    var pixels = [Float](repeating: 0, count: n * channels)
+    for i in 0 ..< n {
+        let src = i * 4
+        let dst = i * channels
+        for c in 0 ..< channels {
+            pixels[dst + c] = rgba.pixels[src + idx[c]]
         }
     }
-    
+
     return LoadedImage(pixels: pixels,
-                       height: height,
-                       width: width,
+                       height: rgba.height,
+                       width: rgba.width,
                        channels: channels)
+}
+
+public func load_image(at url: URL, swizzle: String) throws -> LoadedImage {
+    return try extract_swizzle(try decode_rgba(at: url), swizzle: swizzle)
 }

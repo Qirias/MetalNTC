@@ -2,8 +2,6 @@
 #include "common.h"
 using namespace metal;
 
-#define POS_SCALE (float(SRC_W) / 8.0f)
-
 #define SAMPLE_X      0
 #define SAMPLE_Y      1
 #define SAMPLE_LOD    2
@@ -23,8 +21,8 @@ kernel void grid_mlp_train(device               float*                          
     int x = int(samples[sample_base + SAMPLE_X]);
     int y = int(samples[sample_base + SAMPLE_Y]);
     uint lod = uint(samples[sample_base + SAMPLE_LOD]);
-    uint srcWL = max(uint(SRC_W) >> lod, 1u);
-    uint srcHL = max(uint(SRC_H) >> lod, 1u);
+    uint srcWL = max(consts.srcW >> lod, 1u);
+    uint srcHL = max(consts.srcH >> lod, 1u);
 
     uint2 coord = uint2(uint(x), uint(y));
     float gt[K_OUT_MAX];
@@ -77,7 +75,7 @@ kernel void grid_mlp_train(device               float*                          
     bilinear_sample(params + g1_offset, g1_size, F_PER_GRID, ix0_1, iy0_1, fx1, fy1, w1, c1, features + F_PER_GRID  , consts.q, gid);
 
     float2 uv   = float2(float(x) / float(srcWL - 1), float(y) / float(srcHL - 1));
-    float2 posf = uv * POS_SCALE;
+    float2 posf = uv * consts.posScale;
     pe_encode(posf, features + F_TOTAL);
 
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);

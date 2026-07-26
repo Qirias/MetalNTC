@@ -7,8 +7,8 @@ kernel void grid_mlp_infer(device   const       float*          params  [[buffer
                                     constant    StepConstants&  consts  [[buffer(2)]],
                                                 uint2           gid     [[thread_position_in_grid]]) {
     uint lod   = consts.inferLod;
-    uint outWL = max(uint(SRC_W) >> lod, 1u);
-    uint outHL = max(uint(SRC_H) >> lod, 1u);
+    uint outWL = max(consts.srcW >> lod, 1u);
+    uint outHL = max(consts.srcH >> lod, 1u);
     if (gid.x >= outWL || gid.y >= outHL) return;
 
     float denomX = float(max(int(outWL) - 1, 1));

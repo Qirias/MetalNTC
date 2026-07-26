@@ -12,8 +12,6 @@
 #define PE_DIM       (4 * PE_WAVES)
 #define F_TOTAL      (2 * F_PER_GRID)
 #define F_IN         (F_TOTAL + PE_DIM + 1)
-#define SRC_W        4096
-#define SRC_H        4096
 
 constant int SCALE = 1 << 24;
 
@@ -30,7 +28,5 @@ static const NSInteger PE_WAVES    = 3;
 static const NSInteger PE_DIM      = 4 * PE_WAVES;
 static const NSInteger F_TOTAL     = 2 * F_PER_GRID;
 static const NSInteger F_IN        = F_TOTAL + PE_DIM + 1;
-static const NSInteger SRC_W       = 4096;
-static const NSInteger SRC_H       = 4096;
 
 #endif
