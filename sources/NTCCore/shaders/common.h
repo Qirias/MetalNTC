@@ -116,6 +116,10 @@ inline void pe_encode(float2 posf, thread float* pe) {
     }
 }
     
+// for training, input-outer loop proved to be slower.
+// input-outer loop pushes more register pressure and
+// causes splill to memory, since we have 64 accumulator instead of 1.
+// for inference there is room to share, so cache coherence benefits a lot
 inline void mlp_forward(device const float* params,
                         uint off_w1, uint off_b1,
                         uint off_w2, uint off_b2,
@@ -160,7 +164,6 @@ inline void mlp_forward(device const float* params,
     }
 }
 
-
 inline void sample_latent_grid(texture2d_array<float> latents,
                                sampler                latentSampler,
                                float2 uv, uint mip, uint gridSize,
@@ -195,31 +198,44 @@ inline void mlp_forward_h(device const half* mlp,
 
     // Linear1 + hardGELU
     for (uint h = 0; h < hidden; h++) {
-        half acc = mlp[off_b1 + h];
-        for (uint i = 0; i < fan_in; i++) {
-            acc += mlp[off_w1 + i * hidden + h] * feat_h[i];
+        pre1[h] = mlp[off_b1 + h];
+    }
+    for (uint i = 0; i < fan_in; i++) {
+        half feat_i = feat_h[i];
+        uint row = off_w1 + i * hidden;
+        for (uint h = 0; h < hidden; h++) {
+            pre1[h] += mlp[row + h] * feat_i;
         }
-        pre1[h] = acc;
-        hid1[h] = hard_gelu(acc);
+    }
+    for (uint h = 0; h < hidden; h++) {
+        hid1[h] = hard_gelu(pre1[h]);
     }
 
     // Linear2 + hardGELU
     for (uint h = 0; h < hidden; h++) {
-        half acc = mlp[off_b2 + h];
-        for (uint i = 0; i < hidden; i++) {
-            acc += mlp[off_w2 + i * hidden + h] * hid1[i];
+        pre2[h] = mlp[off_b2 + h];
+    }
+    for (uint i = 0; i < hidden; i++) {
+        half hid1_i = hid1[i];
+        uint row = off_w2 + i * hidden;
+        for (uint h = 0; h < hidden; h++) {
+            pre2[h] += mlp[row + h] * hid1_i;
         }
-        pre2[h] = acc;
-        hid2[h] = hard_gelu(acc);
+    }
+    for (uint h = 0; h < hidden; h++) {
+        hid2[h] = hard_gelu(pre2[h]);
     }
 
     // Linear3
     for (uint k = 0; k < out_dim; k++) {
-        half acc = mlp[off_b3 + k];
-        for (uint h = 0; h < hidden; h++) {
-            acc += mlp[off_w3 + h * out_dim + k] * hid2[h];
+        pred[k] = mlp[off_b3 + k];
+    }
+    for (uint h = 0; h < hidden; h++) {
+        half hid2_h = hid2[h];
+        uint row = off_w3 + h * out_dim;
+        for (uint k = 0; k < out_dim; k++) {
+            pred[k] += mlp[row + k] * hid2_h;
         }
-        pred[k] = acc;
     }
 }
 
