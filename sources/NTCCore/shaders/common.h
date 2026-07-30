@@ -160,29 +160,22 @@ inline void mlp_forward(device const float* params,
     }
 }
 
-inline void bilinear_sample_u8(device const uchar* grid,
-                               uint W, uint F,
-                               int ix0, int iy0, float fx, float fy,
-                               thread float* w,
-                               thread uint*  c,
-                               thread float* features,
-                               float q) {
-    w[0] = (1.0f - fx) * (1.0f - fy);
-    w[1] =         fx  * (1.0f - fy);
-    w[2] = (1.0f - fx) *         fy;
-    w[3] =         fx  *         fy;
 
-    c[0] = (uint(iy0)     * W + uint(ix0))     * F;
-    c[1] = (uint(iy0)     * W + uint(ix0 + 1)) * F;
-    c[2] = (uint(iy0 + 1) * W + uint(ix0))     * F;
-    c[3] = (uint(iy0 + 1) * W + uint(ix0 + 1)) * F;
+inline void sample_latent_grid(texture2d_array<float> latents,
+                               sampler                latentSampler,
+                               float2 uv, uint mip, uint gridSize,
+                               float scale, float bias,
+                               thread float* out /* F_PER_GRID */) {
+    float  gridRes  = float(gridSize);
+    float2 sampleUV = (uv * (gridRes - 1.0f) + 0.5f) / gridRes;
 
-    for (uint feat = 0; feat < F; feat++) {
-        float acc = 0;
-        for (uint corner = 0; corner < 4; corner++) {
-            acc += w[corner] * float(grid[c[corner] + feat]);
-        }
-        features[feat] = (acc - 128.0f) * q;
+    for (uint slice = 0; slice < F_PER_GRID / 4; slice++) {
+        float4 sampled     = latents.sample(latentSampler, sampleUV, slice, level(float(mip)));
+        float4 dequantized = sampled * scale + bias;
+        out[slice * 4 + 0] = dequantized.x;   // .r
+        out[slice * 4 + 1] = dequantized.y;   // .g
+        out[slice * 4 + 2] = dequantized.z;   // .b
+        out[slice * 4 + 3] = dequantized.w;   // .a
     }
 }
 
@@ -232,40 +225,23 @@ inline void mlp_forward_h(device const half* mlp,
 
 inline void ntc_decode_quant(float2                   uv,
                              uint                     lod,
-                             device const uchar*      grid,
+                             texture2d_array<float>   latents,
+                             sampler                  latentSampler,
+                             float                    gridScale,
+                             float                    gridBias,
                              device const half*       mlp,
                              constant StepConstants&  consts,
                              thread half*             pred) {
     uint neural_mip = consts.neuralMipForLod[lod];
-    uint g0_offset  = consts.pyramidOffsets[neural_mip];
-    uint g1_offset  = consts.pyramidOffsets[neural_mip + 1];
     uint g0_size    = consts.pyramidSizes[neural_mip];
     uint g1_size    = consts.pyramidSizes[neural_mip + 1];
 
-    float ix0   = uv.x * float(g0_size - 1);
-    float iy0   = uv.y * float(g0_size - 1);
-    int   ix0_0 = min(int(floor(ix0)), int(g0_size) - 2);
-    int   iy0_0 = min(int(floor(iy0)), int(g0_size) - 2);
-    float fx0   = ix0 - float(ix0_0);
-    float fy0   = iy0 - float(iy0_0);
-
-    float ix1   = uv.x * float(g1_size - 1);
-    float iy1   = uv.y * float(g1_size - 1);
-    int   ix0_1 = min(int(floor(ix1)), int(g1_size) - 2);
-    int   iy0_1 = min(int(floor(iy1)), int(g1_size) - 2);
-    float fx1   = ix1 - float(ix0_1);
-    float fy1   = iy1 - float(iy0_1);
-
-    float w0[4]; float w1[4];
-    uint  c0[4]; uint  c1[4];
     float features[F_IN];
 
-    bilinear_sample_u8(grid + g0_offset, g0_size, F_PER_GRID,
-                       ix0_0, iy0_0, fx0, fy0,
-                       w0, c0, features, consts.q);
-    bilinear_sample_u8(grid + g1_offset, g1_size, F_PER_GRID,
-                       ix0_1, iy0_1, fx1, fy1,
-                       w1, c1, features + F_PER_GRID, consts.q);
+    sample_latent_grid(latents, latentSampler, uv, neural_mip,     g0_size,
+                       gridScale, gridBias, features);
+    sample_latent_grid(latents, latentSampler, uv, neural_mip + 1, g1_size,
+                       gridScale, gridBias, features + F_PER_GRID);
 
     float2 posf = uv * consts.posScale;
     pe_encode(posf, features + F_TOTAL);

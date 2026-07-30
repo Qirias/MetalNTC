@@ -7,11 +7,15 @@
 //   uint32_t pyramidSizes    [header.kGrids]
 //   uint32_t neuralMipsForLod[header.mipCount]
 //   NTCSlot  slots           [header.nSlots]       (32 bytes each)
-//   uint8_t  grid            [sum(pyramidSizes[i]^2) * header.fPerGrid]
-//                                                  offset-binary uint8:
-//                                                    stored = clamp(round(f / q) + 128, 0, 255)
-//                                                    decode = (int(stored) - 128) * q
-//                                                  where q = header.quantScale
+//   uint8_t  grid            nInts = sum(pyramidSizes[i]^2) * fPerGrid quantized
+//                            ints, one per grid feature. Each is offset-binary
+//                            in [0, 2^bits):
+//                              stored = clamp(round(f/q) + offset, 0, 2^bits-1)
+//                              decode = (stored - offset) * q     offset = 1<<(bits-1)
+//                            q = quantScale, bits = quantBits.
+//                            8-bit: one int per byte. 4-bit: packed two
+//                            ints per byte (even index low, odd high), so on
+//                            disk this is ceil(nInts/2) bytes.
 //   uint16_t mlp             [mlpFloatCount]       raw IEEE 754 binary16 bits
 //                                                  (only when header.mlpDType == NTC_MLP_DTYPE_FP16)
 //

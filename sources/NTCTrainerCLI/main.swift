@@ -41,7 +41,7 @@ let K_OUT             = textureSet.kOut
 precondition(K_OUT <= K_OUT_MAX, "K_OUT (\(K_OUT)) exceeds K_OUT_MAX (\(K_OUT_MAX))")
 let K_BATCH = 4096
 
-let BITS: UInt32 = 8
+let BITS: UInt32 = 4
 
 func fake_quant(bits: UInt32) -> (q: Float, lo: Float, hi: Float) {
     if bits == 0 {
@@ -460,12 +460,14 @@ print(String(format: "TRAIN  %d steps in %.3f s ", nSteps, trainDT))
 // will actually see at inference. Grid stays frozen for the rest of this run.
 var gridBytes = [UInt8](repeating: 0, count: OFFSET_MLP)
 if QUANT.q > 0 {
-    let invQ = 1.0 / QUANT.q
+    let invQ   = 1.0 / QUANT.q
+    let offset = 1 << (Int(BITS) - 1)   // offset-binary center: 8 for 4-bit, 128 for 8-bit
+    let maxc   = (1 << Int(BITS)) - 1   // 15 for 4-bit, 255 for 8-bit
     for j in 0..<OFFSET_MLP {
-        let coded   = Int((paramsFloats[j] * invQ).rounded()) + 128
-        let clamped = max(0, min(255, coded))
+        let coded   = Int((paramsFloats[j] * invQ).rounded()) + offset
+        let clamped = max(0, min(maxc, coded))
         gridBytes[j]    = UInt8(clamped)
-        paramsFloats[j] = Float(clamped - 128) * QUANT.q
+        paramsFloats[j] = Float(clamped - offset) * QUANT.q
     }
 }
 
@@ -557,12 +559,7 @@ let ntcFile = packNTC(srcW: SRC_W, srcH: SRC_H, mipCount: mipCount,
 let ntcURL = textureSet.manifestDir.appendingPathComponent("compressed.ntc")
 try writeNTC(ntcFile, to: ntcURL)
 
-let ntcBytes = 64
-              + ntcFile.pyramidSizes.count * 4
-              + ntcFile.neuralMipsForLod.count * 4
-              + ntcFile.slots.count * 32
-              + ntcFile.grid.count
-              + ntcFile.mlp.count * 2
+let ntcBytes = (try? FileManager.default.attributesOfItem(atPath: ntcURL.path))?[.size] as? Int ?? 0
 print(String(format: "wrote %@  (%d bytes = %.2f MB)", ntcURL.path, ntcBytes, Double(ntcBytes) / (1024 * 1024)))
 
 // infer all mips and write them to two [4096+2048, 4096] texture atlases

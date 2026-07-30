@@ -6,7 +6,7 @@
 #define K_HIDDEN     64
 #define K_OUT_MAX    16
 #define K_GRIDS      8
-#define F_PER_GRID   8
+#define F_PER_GRID   16
 #define MAX_LODS     13
 #define PE_WAVES     3
 #define PE_DIM       (4 * PE_WAVES)
@@ -22,7 +22,7 @@ constant int SCALE = 1 << 24;
 static const NSInteger K_HIDDEN    = 64;
 static const NSInteger K_OUT_MAX   = 16;
 static const NSInteger K_GRIDS     = 8;
-static const NSInteger F_PER_GRID  = 8;
+static const NSInteger F_PER_GRID  = 16;
 static const NSInteger MAX_LODS    = 13;
 static const NSInteger PE_WAVES    = 3;
 static const NSInteger PE_DIM      = 4 * PE_WAVES;
