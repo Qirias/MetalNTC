@@ -334,7 +334,7 @@ inferArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
 // a^2 = 6 / fan_in
 // so a = sqrt(6/fan_in)
 
-let w1Bound = sqrtf(6.0 / Float(F_IN))
+let w1Bound = sqrtf(6.0 / Float(F_IN_RAW))
 let w2Bound = sqrtf(6.0 / Float(K_HIDDEN))
 
 

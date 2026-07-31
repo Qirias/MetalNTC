@@ -32,7 +32,9 @@ public struct NTCFile {
 
     public static func mlpFloatCount(fPerGrid: Int, peWaves: Int,
                                      kHidden: Int, kOutMax: Int) -> Int {
-        let fIn = 2 * fPerGrid + 4 * peWaves + 1
+        // must match F_IN in ntc_constants.h
+        let fInRaw = 2 * fPerGrid + 4 * peWaves + 1
+        let fIn = ((fInRaw + 15) / 16) * 16
         return fIn * kHidden + kHidden
              + kHidden * kHidden + kHidden
              + kHidden * kOutMax + kOutMax

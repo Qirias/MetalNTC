@@ -116,10 +116,6 @@ inline void pe_encode(float2 posf, thread float* pe) {
     }
 }
     
-// for training, input-outer loop proved to be slower.
-// input-outer loop pushes more register pressure and
-// causes splill to memory, since we have 64 accumulator instead of 1.
-// for inference there is room to share, so cache coherence benefits a lot
 inline void mlp_forward(device const float* params,
                         uint off_w1, uint off_b1,
                         uint off_w2, uint off_b2,
@@ -138,7 +134,7 @@ inline void mlp_forward(device const float* params,
     for (uint h = 0; h < hidden; h++) {
         half acc = half(params[off_b1 + h]);
         for (uint i = 0; i < fan_in; i++) {
-            acc += half(params[off_w1 + i * hidden + h]) * feat_h[i];
+            acc += half(params[off_w1 + h * fan_in + i]) * feat_h[i];
         }
         pre1[h] = acc;
         hid1[h] = hard_gelu(acc);
@@ -148,7 +144,7 @@ inline void mlp_forward(device const float* params,
     for (uint h = 0; h < hidden; h++) {
         half acc = half(params[off_b2 + h]);
         for (uint i = 0; i < hidden; i++) {
-            acc += half(params[off_w2 + i * hidden + h]) * hid1[i];
+            acc += half(params[off_w2 + h * hidden + i]) * hid1[i];
         }
         pre2[h] = acc;
         hid2[h] = hard_gelu(acc);
@@ -158,7 +154,7 @@ inline void mlp_forward(device const float* params,
     for (uint k = 0; k < out_dim; k++) {
         half acc = half(params[off_b3 + k]);
         for (uint h = 0; h < hidden; h++) {
-            acc += half(params[off_w3 + h * out_dim + k]) * hid2[h];
+            acc += half(params[off_w3 + k * hidden + h]) * hid2[h];
         }
         pred[k] = acc;
     }
@@ -191,51 +187,63 @@ inline void mlp_forward_h(device const half* mlp,
                           thread half* pre1, thread half* hid1,
                           thread half* pre2, thread half* hid2,
                           thread half* pred) {
-    half feat_h[F_IN];
-    for (uint i = 0; i < fan_in; i++) {
-        feat_h[i] = half(features[i]);
+    
+    // pack the padded input vector into aligned half4 groups
+    half4 input4[F_IN / 4];
+    for (uint group = 0; group < fan_in / 4; group++) {
+        uint base = group * 4;
+        input4[group] = half4(features[base + 0], features[base + 1],
+                              features[base + 2], features[base + 3]);
     }
 
     // Linear1 + hardGELU
-    for (uint h = 0; h < hidden; h++) {
-        pre1[h] = mlp[off_b1 + h];
-    }
-    for (uint i = 0; i < fan_in; i++) {
-        half feat_i = feat_h[i];
-        uint row = off_w1 + i * hidden;
-        for (uint h = 0; h < hidden; h++) {
-            pre1[h] += mlp[row + h] * feat_i;
+    // one output row at a time
+    for (uint outNeuron = 0; outNeuron < hidden; outNeuron++) {
+        device const half4* weightRow = (device const half4*)(mlp + off_w1 + outNeuron * fan_in);
+        half4 rowAcc4 = half4(0.0h);
+        for (uint group = 0; group < fan_in / 4; group++) {
+            rowAcc4 += weightRow[group] * input4[group];
         }
+        half rowSum = mlp[off_b1 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
+        pre1[outNeuron] = rowSum;
+        hid1[outNeuron] = hard_gelu(rowSum);
     }
-    for (uint h = 0; h < hidden; h++) {
-        hid1[h] = hard_gelu(pre1[h]);
+
+    // pack into half4
+    half4 hidden4[K_HIDDEN / 4];
+    for (uint group = 0; group < hidden / 4; group++) {
+        uint base = group * 4;
+        hidden4[group] = half4(hid1[base + 0], hid1[base + 1],
+                               hid1[base + 2], hid1[base + 3]);
     }
 
     // Linear2 + hardGELU
-    for (uint h = 0; h < hidden; h++) {
-        pre2[h] = mlp[off_b2 + h];
-    }
-    for (uint i = 0; i < hidden; i++) {
-        half hid1_i = hid1[i];
-        uint row = off_w2 + i * hidden;
-        for (uint h = 0; h < hidden; h++) {
-            pre2[h] += mlp[row + h] * hid1_i;
+    for (uint outNeuron = 0; outNeuron < hidden; outNeuron++) {
+        device const half4* weightRow = (device const half4*)(mlp + off_w2 + outNeuron * hidden);
+        half4 rowAcc4 = half4(0.0h);
+        for (uint group = 0; group < hidden / 4; group++) {
+            rowAcc4 += weightRow[group] * hidden4[group];
         }
+        half rowSum = mlp[off_b2 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
+        pre2[outNeuron] = rowSum;
+        hid2[outNeuron] = hard_gelu(rowSum);
     }
-    for (uint h = 0; h < hidden; h++) {
-        hid2[h] = hard_gelu(pre2[h]);
+
+    // pack into half4
+    for (uint group = 0; group < hidden / 4; group++) {
+        uint base = group * 4;
+        hidden4[group] = half4(hid2[base + 0], hid2[base + 1],
+                               hid2[base + 2], hid2[base + 3]);
     }
 
     // Linear3
-    for (uint k = 0; k < out_dim; k++) {
-        pred[k] = mlp[off_b3 + k];
-    }
-    for (uint h = 0; h < hidden; h++) {
-        half hid2_h = hid2[h];
-        uint row = off_w3 + h * out_dim;
-        for (uint k = 0; k < out_dim; k++) {
-            pred[k] += mlp[row + k] * hid2_h;
+    for (uint outChannel = 0; outChannel < out_dim; outChannel++) {
+        device const half4* weightRow = (device const half4*)(mlp + off_w3 + outChannel * hidden);
+        half4 rowAcc4 = half4(0.0h);
+        for (uint group = 0; group < hidden / 4; group++) {
+            rowAcc4 += weightRow[group] * hidden4[group];
         }
+        pred[outChannel] = mlp[off_b3 + outChannel] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
     }
 }
 
@@ -262,6 +270,9 @@ inline void ntc_decode_quant(float2                   uv,
     float2 posf = uv * consts.posScale;
     pe_encode(posf, features + F_TOTAL);
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
+    for (uint i = F_IN_RAW; i < F_IN; i++) {
+        features[i] = 0.0f;   // zero padded lanes
+    }
 
     half pre1[K_HIDDEN];
     half pre2[K_HIDDEN];
@@ -317,6 +328,9 @@ inline void ntc_decode(float2                    uv,
     float2 posf = uv * consts.posScale;
     pe_encode(posf, features + F_TOTAL);
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
+    for (uint i = F_IN_RAW; i < F_IN; i++) {
+        features[i] = 0.0f;   // zero padded lanes
+    }
 
     half pre1[K_HIDDEN];
     half pre2[K_HIDDEN];

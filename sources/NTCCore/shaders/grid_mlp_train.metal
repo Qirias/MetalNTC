@@ -79,6 +79,7 @@ kernel void grid_mlp_train(device               float*                          
     pe_encode(posf, features + F_TOTAL);
 
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
+    for (uint i = F_IN_RAW; i < F_IN; i++) features[i] = 0.0f;   // zero padded lanes
 
     // ========
     // Forward
@@ -123,8 +124,8 @@ kernel void grid_mlp_train(device               float*                          
     for (uint h = 0; h < K_HIDDEN; h++) {
         float hid2_f = float(hid2[h]);
         for (uint k = 0; k < consts.kOut; k++) {
-            atomic_add_fixed(&grads[consts.offsetW3 + h * K_OUT_MAX + k], d_pred[k] * hid2_f);
-            d_hid2[h] += params[consts.offsetW3 + h * K_OUT_MAX + k] * d_pred[k];
+            atomic_add_fixed(&grads[consts.offsetW3 + k * K_HIDDEN + h], d_pred[k] * hid2_f);
+            d_hid2[h] += params[consts.offsetW3 + k * K_HIDDEN + h] * d_pred[k];
         }
     }
 
@@ -147,8 +148,8 @@ kernel void grid_mlp_train(device               float*                          
     for (uint h = 0; h < K_HIDDEN; h++) {
         float hid1_f = float(hid1[h]);
         for (uint k = 0; k < K_HIDDEN; k++) {
-            atomic_add_fixed(&grads[consts.offsetW2 + h * K_HIDDEN + k], d_pre2[k] * hid1_f);
-            d_hid1[h] += params[consts.offsetW2 + h * K_HIDDEN + k] * d_pre2[k];
+            atomic_add_fixed(&grads[consts.offsetW2 + k * K_HIDDEN + h], d_pre2[k] * hid1_f);
+            d_hid1[h] += params[consts.offsetW2 + k * K_HIDDEN + h] * d_pre2[k];
         }
     }
 
@@ -170,8 +171,8 @@ kernel void grid_mlp_train(device               float*                          
 
     for (uint i = 0; i < F_IN; i++) {
         for (uint h = 0; h < K_HIDDEN; h++) {
-            atomic_add_fixed(&grads[consts.offsetW1 + i * K_HIDDEN + h], d_pre1[h] * features[i]);
-            d_feats[i] += params[consts.offsetW1 + i * K_HIDDEN + h] * d_pre1[h];
+            atomic_add_fixed(&grads[consts.offsetW1 + h * F_IN + i], d_pre1[h] * features[i]);
+            d_feats[i] += params[consts.offsetW1 + h * F_IN + i] * d_pre1[h];
         }
     }
 

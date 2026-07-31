@@ -11,7 +11,8 @@
 #define PE_WAVES     3
 #define PE_DIM       (4 * PE_WAVES)
 #define F_TOTAL      (2 * F_PER_GRID)
-#define F_IN         (F_TOTAL + PE_DIM + 1)
+#define F_IN_RAW     (F_TOTAL + PE_DIM + 1)
+#define F_IN         (((F_IN_RAW + 15) / 16) * 16)
 
 constant int SCALE = 1 << 24;
 
@@ -27,6 +28,7 @@ static const NSInteger MAX_LODS    = 13;
 static const NSInteger PE_WAVES    = 3;
 static const NSInteger PE_DIM      = 4 * PE_WAVES;
 static const NSInteger F_TOTAL     = 2 * F_PER_GRID;
-static const NSInteger F_IN        = F_TOTAL + PE_DIM + 1;
+static const NSInteger F_IN_RAW    = F_TOTAL + PE_DIM + 1;
+static const NSInteger F_IN        = ((F_IN_RAW + 15) / 16) * 16;
 
 #endif
