@@ -273,11 +273,12 @@ inline void ntc_decode_quant(float2                   uv,
 
     half hid1[K_HIDDEN];
     half hid2[K_HIDDEN];
+
     mlp_forward_h(mlp,
                   consts.offsetW1, consts.offsetB1,
                   consts.offsetW2, consts.offsetB2,
                   consts.offsetW3, consts.offsetB3,
-                  F_IN, K_HIDDEN, K_OUT_MAX,
+                  F_IN, K_HIDDEN, consts.kOut,
                   features,
                   hid1, hid2, pred);
 }
