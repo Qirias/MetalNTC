@@ -184,8 +184,7 @@ inline void mlp_forward_h(device const half* mlp,
                           uint off_w3, uint off_b3,
                           uint fan_in, uint hidden, uint out_dim,
                           thread const float* features,
-                          thread half* pre1, thread half* hid1,
-                          thread half* pre2, thread half* hid2,
+                          thread half* hid1, thread half* hid2,
                           thread half* pred) {
     
     // pack the padded input vector into aligned half4 groups
@@ -205,7 +204,6 @@ inline void mlp_forward_h(device const half* mlp,
             rowAcc4 += weightRow[group] * input4[group];
         }
         half rowSum = mlp[off_b1 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
-        pre1[outNeuron] = rowSum;
         hid1[outNeuron] = hard_gelu(rowSum);
     }
 
@@ -225,7 +223,6 @@ inline void mlp_forward_h(device const half* mlp,
             rowAcc4 += weightRow[group] * hidden4[group];
         }
         half rowSum = mlp[off_b2 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
-        pre2[outNeuron] = rowSum;
         hid2[outNeuron] = hard_gelu(rowSum);
     }
 
@@ -274,8 +271,6 @@ inline void ntc_decode_quant(float2                   uv,
         features[i] = 0.0f;   // zero padded lanes
     }
 
-    half pre1[K_HIDDEN];
-    half pre2[K_HIDDEN];
     half hid1[K_HIDDEN];
     half hid2[K_HIDDEN];
     mlp_forward_h(mlp,
@@ -284,7 +279,7 @@ inline void ntc_decode_quant(float2                   uv,
                   consts.offsetW3, consts.offsetB3,
                   F_IN, K_HIDDEN, K_OUT_MAX,
                   features,
-                  pre1, hid1, pre2, hid2, pred);
+                  hid1, hid2, pred);
 }
 
 inline void ntc_decode(float2                    uv,
