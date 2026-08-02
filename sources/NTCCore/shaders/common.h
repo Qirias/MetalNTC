@@ -115,6 +115,17 @@ inline void pe_encode(float2 posf, thread float* pe) {
         posf *= 2.0;
     }
 }
+
+// overload for storing fp16
+inline void pe_encode(float2 posf, thread half* pe) {
+    for (uint i = 0; i < PE_WAVES; i++) {
+        pe[4*i + 0] = half(fract(posf.x)        * 2.0 - 1.0);
+        pe[4*i + 1] = half(fract(posf.y)        * 2.0 - 1.0);
+        pe[4*i + 2] = half(fract(posf.x + 0.25) * 2.0 - 1.0);
+        pe[4*i + 3] = half(fract(posf.y + 0.25) * 2.0 - 1.0);
+        posf *= 2.0;
+    }
+}
     
 inline void mlp_forward(device const float* params,
                         uint off_w1, uint off_b1,
@@ -164,13 +175,13 @@ inline void sample_latent_grid(texture2d_array<float> latents,
                                sampler                latentSampler,
                                float2 uv, uint mip, uint gridSize,
                                float scale, float bias,
-                               thread float* out /* F_PER_GRID */) {
+                               thread half* out /* F_PER_GRID */) {
     float  gridRes  = float(gridSize);
     float2 sampleUV = (uv * (gridRes - 1.0f) + 0.5f) / gridRes;
 
     for (uint slice = 0; slice < F_PER_GRID / 4; slice++) {
         float4 sampled     = latents.sample(latentSampler, sampleUV, slice, level(float(mip)));
-        float4 dequantized = sampled * scale + bias;
+        half4  dequantized = half4(sampled * scale + bias);
         out[slice * 4 + 0] = dequantized.x;   // .r
         out[slice * 4 + 1] = dequantized.y;   // .g
         out[slice * 4 + 2] = dequantized.z;   // .b
@@ -183,7 +194,7 @@ inline void mlp_forward_h(device const half* mlp,
                           uint off_w2, uint off_b2,
                           uint off_w3, uint off_b3,
                           uint fan_in, uint hidden, uint out_dim,
-                          thread const float* features,
+                          thread const half* features,
                           thread half* hid1, thread half* hid2,
                           thread half* pred) {
     
@@ -257,7 +268,7 @@ inline void ntc_decode_quant(float2                   uv,
     uint g0_size    = consts.pyramidSizes[neural_mip];
     uint g1_size    = consts.pyramidSizes[neural_mip + 1];
 
-    float features[F_IN];
+    half features[F_IN];
 
     sample_latent_grid(latents, latentSampler, uv, neural_mip,     g0_size,
                        gridScale, gridBias, features);
@@ -266,9 +277,9 @@ inline void ntc_decode_quant(float2                   uv,
 
     float2 posf = uv * consts.posScale;
     pe_encode(posf, features + F_TOTAL);
-    features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
+    features[F_TOTAL + PE_DIM] = half(float(lod) / float(MAX_LODS - 1));
     for (uint i = F_IN_RAW; i < F_IN; i++) {
-        features[i] = 0.0f;   // zero padded lanes
+        features[i] = 0.0h;   // zero padded lanes
     }
 
     half hid1[K_HIDDEN];
