@@ -5,10 +5,13 @@ import Metal
 import Foundation
 import QuartzCore
 
-let defaultManifest = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/SciFiHelmet/glTF/manifest.json"
-let manifestPath    = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultManifest
-let manifestURL     = URL(fileURLWithPath: manifestPath)
-let textureSet      = try TextureSet(manifestURL: manifestURL)
+let defaultGLTF = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/SciFiHelmet/glTF/SciFiHelmet.gltf"
+let gltfPath    = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultGLTF
+let gltfURL     = URL(fileURLWithPath: gltfPath)
+
+let manifestURL = try ManifestGen.generate(fromGLTF: gltfURL)
+print("generated manifest from \(gltfURL.lastPathComponent) -> \(manifestURL.path)")
+let textureSet = try TextureSet(manifestURL: manifestURL)
 
 let materialImages: [LoadedImage]
 let SRC_W: Int

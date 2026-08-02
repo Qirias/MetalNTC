@@ -1,8 +1,8 @@
 import Foundation
 import NTCAssets
 
-public struct Manifest: Decodable {
-    public struct Entry: Decodable {
+public struct Manifest: Codable {
+    public struct Entry: Codable {
         public let fileName: String
         public let isSRGB: Bool?
         /// semantic -> swizzle, e.g. {"Roughness": "G", "Metalness": "B"}.
