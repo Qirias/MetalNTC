@@ -19,6 +19,7 @@ enum ManifestGen {
             let metallicRoughnessTexture: TexRef?
         }
         struct Material: Decodable {
+            let name: String?
             let pbrMetallicRoughness: PBR?
             let normalTexture:    TexRef?
             let occlusionTexture: TexRef?
@@ -44,19 +45,16 @@ enum ManifestGen {
         }
     }
 
-    /// Reads the glTF material block, writes `manifest.json` beside the .gltf,
-    /// and returns the URL of the written file.
+    /// Reads every material in the glTF, writes ONE `manifest.json` beside the
+    /// .gltf (a list of models, one per material), and returns the decoded
+    /// Manifest. One .ntc is trained per model.
     @discardableResult
-    static func generate(fromGLTF gltfURL: URL) throws -> URL {
+    static func generate(fromGLTF gltfURL: URL) throws -> Manifest {
         let data = try Data(contentsOf: gltfURL)
         let doc  = try JSONDecoder().decode(GLTFDoc.self, from: data)
 
-        guard let materials = doc.materials, let material = materials.first else {
+        guard let materials = doc.materials, !materials.isEmpty else {
             throw Err.msg("glTF \(gltfURL.lastPathComponent) declares no materials")
-        }
-        if materials.count > 1 {
-            FileHandle.standardError.write(Data(
-                "warning: glTF has \(materials.count) materials; using the first (renderer supports one)\n".utf8))
         }
 
         let textures = doc.textures ?? []
@@ -71,28 +69,47 @@ enum ManifestGen {
             return uri.removingPercentEncoding ?? uri
         }
 
-        var entries: [Manifest.Entry] = []
-        func add(_ ref: GLTFDoc.TexRef?, _ semantics: [String: String], srgb: Bool) {
-            guard let f = fileName(ref) else { return }
-            entries.append(.init(fileName: f, isSRGB: srgb ? true : nil, semantics: semantics))
+        var models: [Manifest.Model] = []
+        for (i, material) in materials.enumerated() {
+            var entries: [Manifest.Entry] = []
+            func add(_ ref: GLTFDoc.TexRef?, _ semantics: [String: String], srgb: Bool) {
+                guard let f = fileName(ref) else { return }
+                entries.append(.init(fileName: f, isSRGB: srgb ? true : nil, semantics: semantics))
+            }
+
+            add(material.pbrMetallicRoughness?.baseColorTexture,         ["Albedo": "RGB"],                    srgb: true)
+            add(material.normalTexture,                                  ["Normal": "RGB"],                    srgb: false)
+            add(material.pbrMetallicRoughness?.metallicRoughnessTexture, ["Roughness": "G", "Metalness": "B"], srgb: false)
+            add(material.occlusionTexture,                               ["Occlusion": "R"],                   srgb: false)
+            add(material.emissiveTexture,                                ["Emissive": "RGB"],                  srgb: true)
+
+            guard !entries.isEmpty else {
+                FileHandle.standardError.write(Data(
+                    "warning: material \(i) (\(material.name ?? "unnamed")) has no usable textures; skipped\n".utf8))
+                continue
+            }
+            models.append(.init(name: safeName(material.name, index: i), textures: entries))
         }
 
-        add(material.pbrMetallicRoughness?.baseColorTexture,         ["Albedo": "RGB"],                    srgb: true)
-        add(material.normalTexture,                                  ["Normal": "RGB"],                    srgb: false)
-        add(material.pbrMetallicRoughness?.metallicRoughnessTexture, ["Roughness": "G", "Metalness": "B"], srgb: false)
-        add(material.occlusionTexture,                               ["Occlusion": "R"],                   srgb: false)
-        add(material.emissiveTexture,                                ["Emissive": "RGB"],                  srgb: true)
-
-        guard !entries.isEmpty else {
-            throw Err.msg("glTF material referenced no usable textures")
+        guard !models.isEmpty else {
+            throw Err.msg("glTF \(gltfURL.lastPathComponent) has no material with usable textures")
         }
 
+        let manifest = Manifest(models: models)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let json = try enc.encode(Manifest(textures: entries))
+        let json = try enc.encode(manifest)
 
         let outURL = gltfURL.deletingLastPathComponent().appendingPathComponent("manifest.json")
         try json.write(to: outURL)
-        return outURL
+        return manifest
+    }
+
+    /// Make a material name safe to use as a filename; fall back to material_<i>.
+    private static func safeName(_ raw: String?, index: Int) -> String {
+        guard let raw, !raw.isEmpty else { return "material_\(index)" }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let cleaned = String(raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+        return cleaned.isEmpty ? "material_\(index)" : cleaned
     }
 }

@@ -1,6 +1,9 @@
 import Foundation
 import NTCAssets
 
+/// One manifest.json describes a whole glTF: a list of models (one per
+/// submesh/material). One .ntc is trained per model, so a crash mid-training
+/// only loses the model in flight, never the whole set.
 public struct Manifest: Codable {
     public struct Entry: Codable {
         public let fileName: String
@@ -10,7 +13,17 @@ public struct Manifest: Codable {
         /// metalness into a single metalRoughness texture.
         public let semantics: [String: String]
     }
-    public let textures: [Entry]
+    /// One trainable unit: the texture slots of a single glTF material.
+    /// `name` becomes the .ntc filename (`<name>.ntc`).
+    public struct Model: Codable {
+        public let name: String
+        public let textures: [Entry]
+    }
+    public let models: [Model]
+
+    public static func load(from url: URL) throws -> Manifest {
+        try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
+    }
 }
 
 /// TODO: add verticalFlip
@@ -25,18 +38,21 @@ public struct TextureSlot {
 }
 
 public struct TextureSet {
+    public let name: String        // model name -> <name>.ntc
     public let slots: [TextureSlot]
     public let kOut: Int
     public let manifestDir: URL
 
-    public init(manifestURL: URL) throws {
-        let data = try Data(contentsOf: manifestURL)
-        let manifest = try JSONDecoder().decode(Manifest.self, from: data)
-        self.manifestDir = manifestURL.deletingLastPathComponent()
+    /// Build the texture set for a single model (submesh/material). `dir` is the
+    /// glTF's directory; entry file names resolve against it (they may include a
+    /// `textures/` subpath).
+    public init(model: Manifest.Model, dir: URL) {
+        self.name = model.name
+        self.manifestDir = dir
 
         var built: [TextureSlot] = []
         var offset = 0
-        for entry in manifest.textures {
+        for entry in model.textures {
             precondition(!entry.semantics.isEmpty, "\(entry.fileName): no semantics declared")
             // Dictionary order is not stable across runs, so sort by semantic
             // name. Channel offsets are baked into the .ntc, and a run-to-run
