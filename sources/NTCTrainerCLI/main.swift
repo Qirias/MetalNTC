@@ -5,9 +5,10 @@ import Metal
 import Foundation
 import QuartzCore
 
-let defaultInput = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/flighthelmet/scene.gltf"
-let inputPath    = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultInput
-let inputURL     = URL(fileURLWithPath: inputPath)
+
+//let inputPath = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
+let inputPath = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/flighthelmet/scene.gltf"
+let inputURL  = URL(fileURLWithPath: inputPath)
 
 func discoverGLTFs(_ url: URL) -> [URL] {
     var isDir: ObjCBool = false
@@ -22,12 +23,30 @@ func discoverGLTFs(_ url: URL) -> [URL] {
     return out.sorted { $0.path < $1.path }
 }
 
-let gltfURLs = discoverGLTFs(inputURL)
-guard !gltfURLs.isEmpty else { fatalError("no .gltf found at \(inputPath)") }
-
 enum TrainerError: Error, CustomStringConvertible {
     case msg(String)
     var description: String { switch self { case .msg(let m): return m } }
+}
+
+/// Resolve the input to (manifest, directory) pairs. A .gltf generates its
+/// manifest; a manifest.json loads directly (new `{models}` or old flat
+/// `{textures}` format); a directory with a manifest.json loads it as a texture
+/// set, otherwise it is scanned for .gltf files.
+func loadManifests(_ url: URL) throws -> [(manifest: Manifest, dir: URL)] {
+    var isDir: ObjCBool = false
+    FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+    if isDir.boolValue {
+        let manifestURL = url.appendingPathComponent("manifest.json")
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            return [(try Manifest.load(from: manifestURL), url)]
+        }
+        return try discoverGLTFs(url).map { (try ManifestGen.generate(fromGLTF: $0), $0.deletingLastPathComponent()) }
+    }
+    switch url.pathExtension.lowercased() {
+        case "gltf": return [(try ManifestGen.generate(fromGLTF: url), url.deletingLastPathComponent())]
+        case "json": return [(try Manifest.load(from: url),           url.deletingLastPathComponent())]
+        default:     throw TrainerError.msg("unsupported input \(url.lastPathComponent); expected .gltf, manifest.json, or a directory")
+    }
 }
 
 struct PyramidPreset {
@@ -696,22 +715,17 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     }
 }
 
+let sources = try loadManifests(inputURL)
+guard !sources.isEmpty else { fatalError("no trainable input at \(inputPath)") }
+
 var failures: [String] = []
-for gltfURL in gltfURLs {
-    let manifest: Manifest
-    do {
-        manifest = try ManifestGen.generate(fromGLTF: gltfURL)
-    } catch {
-        FileHandle.standardError.write(Data("SKIP \(gltfURL.lastPathComponent): manifest failed: \(error)\n".utf8))
-        failures.append("\(gltfURL.lastPathComponent) (manifest)")
-        continue
-    }
-    print("== \(gltfURL.lastPathComponent): \(manifest.models.count) model(s) ==")
+for (manifest, dir) in sources {
+    print("== \(dir.lastPathComponent): \(manifest.models.count) model(s) ==")
     for (i, model) in manifest.models.enumerated() {
         print("-- [\(i + 1)/\(manifest.models.count)] training \(model.name) (\(model.textures.count) textures) --")
         // one model failing must not lose the models already written or the ones still to run
         do {
-            try trainModel(model, dir: gltfURL.deletingLastPathComponent())
+            try trainModel(model, dir: dir)
         } catch {
             FileHandle.standardError.write(Data("SKIP model \(model.name): \(error)\n".utf8))
             failures.append("\(model.name)")

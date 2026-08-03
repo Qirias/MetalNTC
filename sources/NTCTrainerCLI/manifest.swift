@@ -21,8 +21,18 @@ public struct Manifest: Codable {
     }
     public let models: [Model]
 
+    /// Load a manifest.json. Accepts the new `{ "models": [...] }` shape, or the
+    /// old flat `{ "textures": [...] }` (a texture-only set, e.g. the Manhole),
+    /// which is wrapped as a single model named after the parent directory.
     public static func load(from url: URL) throws -> Manifest {
-        try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
+        let data = try Data(contentsOf: url)
+        if let manifest = try? JSONDecoder().decode(Manifest.self, from: data) {
+            return manifest
+        }
+        struct Flat: Decodable { let textures: [Entry] }
+        let flat = try JSONDecoder().decode(Flat.self, from: data)
+        let name = url.deletingLastPathComponent().lastPathComponent
+        return Manifest(models: [Model(name: name, textures: flat.textures)])
     }
 }
 
