@@ -5,7 +5,6 @@ import Metal
 import Foundation
 import QuartzCore
 
-
 //let inputPath = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
 let inputPath = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/flighthelmet/scene.gltf"
 let inputURL  = URL(fileURLWithPath: inputPath)
