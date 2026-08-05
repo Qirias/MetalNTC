@@ -159,17 +159,11 @@ struct StepConstants {
     var posScale:            Float
 }
 
-// ---------------------------------------------------------------------------
-// Metal context + pipelines: built once, reused for every model.
-// ---------------------------------------------------------------------------
 let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = try ctx.makeComputePipelineState(function: "grid_mlp_train")
 let inferPso = try ctx.makeComputePipelineState(function: "grid_mlp_infer")
 let adamPso   = try ctx.makeComputePipelineState(function: "adam_step")
 
-// ---------------------------------------------------------------------------
-// Train one model (submesh/material) and write <name>.ntc beside the glTF.
-// ---------------------------------------------------------------------------
 @MainActor
 func trainModel(_ model: Manifest.Model, dir: URL) throws {
     let textureSet = TextureSet(model: model, dir: dir)
@@ -180,8 +174,6 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     (materialImages, SRC_W, SRC_H) = try textureSet.loadImages() 
 
     guard let PRESET = PYRAMID_PRESETS[SRC_W] else {
-        // Thrown, not fatal: the driver skips this model and keeps going so one
-        // unsupported resolution does not abort the whole batch.
         throw TrainerError.msg("no pyramid preset for \(SRC_W)x\(SRC_H); add one to PYRAMID_PRESETS")
     }
     let PYRAMID_SIZES: [Int] = PRESET.sizes
@@ -672,6 +664,14 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         signalValue += 1
         ctx.queue.signalEvent(event, value: signalValue)
         event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
+
+//        for slot in textureSet.slots {
+//            readPyramidSlice(lod: lod, slice: slot.sliceIndex, outWL: outWL, outHL: outHL)
+//            let mse  = materialMse(slot, outWL: outWL, outHL: outHL)
+//            let psnr = mse > 0 ? 10.0 * log10(1.0 / mse) : Double.infinity
+//            print(String(format: "  lod %2d  %-10s %4dx%-4d  MSE %.3e  PSNR %.2f dB",
+//                         lod, (slot.semantic as NSString).utf8String!, outWL, outHL, mse, psnr))
+//        }
 
         // mip 0 goes on the left, rest of the mips to the right and down
         let xOff: Int
