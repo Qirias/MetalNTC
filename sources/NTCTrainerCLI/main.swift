@@ -4,10 +4,44 @@ import NTCShared
 import Metal
 import Foundation
 import QuartzCore
+import AppKit
 
-//let inputPath = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
-let inputPath = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/flighthelmet/scene.gltf"
-let inputURL  = URL(fileURLWithPath: inputPath)
+
+// set INPUT_OVERRIDE to skip the picker
+//   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/flighthelmet/scene.gltf"
+//   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
+let INPUT_OVERRIDE: String? = nil
+
+let DEFAULT_BROWSE_DIR = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models"
+
+@MainActor
+func pickInput() -> URL? {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let panel = NSOpenPanel()
+    panel.title                   = "Select a model to compress"
+    panel.message                 = "Choose a .gltf, a manifest.json, or a texture directory"
+    panel.prompt                  = "Compress"
+    panel.canChooseFiles          = true
+    panel.canChooseDirectories    = true
+    panel.allowsMultipleSelection = false
+    if FileManager.default.fileExists(atPath: DEFAULT_BROWSE_DIR) {
+        panel.directoryURL = URL(fileURLWithPath: DEFAULT_BROWSE_DIR)
+    }
+    app.activate(ignoringOtherApps: true)
+    return panel.runModal() == .OK ? panel.url : nil
+}
+
+@MainActor
+func resolveInput() throws -> URL {
+    let args = CommandLine.arguments
+    if args.count > 1 { return URL(fileURLWithPath: args[1]) }
+    if let ovr = INPUT_OVERRIDE, !ovr.isEmpty { return URL(fileURLWithPath: ovr) }
+    if let picked = pickInput() { return picked }
+    throw TrainerError.msg("no input: pass a path as an argument, set INPUT_OVERRIDE, or pick one in the panel")
+}
+
+let inputURL = try resolveInput()
 
 func discoverGLTFs(_ url: URL) -> [URL] {
     var isDir: ObjCBool = false
@@ -715,7 +749,9 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
 }
 
 let sources = try loadManifests(inputURL)
-guard !sources.isEmpty else { fatalError("no trainable input at \(inputPath)") }
+guard !sources.isEmpty else{
+    fatalError("no trainable input at \(inputURL.path)")
+}
 
 var failures: [String] = []
 for (manifest, dir) in sources {
