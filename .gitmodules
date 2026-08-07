@@ -1,0 +1,3 @@
+[submodule "sources/NTCRenderer"]
+	path = sources/NTCRenderer
+	url = https://github.com/Qirias/MetalNTC-Renderer.git
