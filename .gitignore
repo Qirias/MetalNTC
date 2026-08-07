@@ -8,3 +8,8 @@ Package.resolved
 *.ntc
 *.gltf
 *.bin
+# generated trainer output atlases
+output/
+# built shader libs
+*.metallib
+*.air

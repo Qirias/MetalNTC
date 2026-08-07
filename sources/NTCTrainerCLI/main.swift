@@ -12,7 +12,12 @@ import AppKit
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
 let INPUT_OVERRIDE: String? = nil
 
-let DEFAULT_BROWSE_DIR = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models"
+// Start the picker in the renderer submodule's demo models if it is checked out
+// (guarded by fileExists below, so it is harmless when the submodule is absent).
+let DEFAULT_BROWSE_DIR = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()   // sources/NTCTrainerCLI
+    .deletingLastPathComponent()   // sources
+    .appendingPathComponent("NTCRenderer/assets/models").path
 
 @MainActor
 func pickInput() -> URL? {
