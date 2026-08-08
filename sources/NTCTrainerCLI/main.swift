@@ -26,7 +26,7 @@ func pickInput() -> URL? {
     let panel = NSOpenPanel()
     panel.title                   = "Select a model to compress"
     panel.message                 = "Choose a .gltf, a manifest.json, or a texture directory"
-    panel.prompt                  = "Compress"
+    panel.prompt                  = "Select Quality"
     panel.canChooseFiles          = true
     panel.canChooseDirectories    = true
     panel.allowsMultipleSelection = false
@@ -46,7 +46,43 @@ func resolveInput() throws -> URL {
     throw TrainerError.msg("no input: pass a path as an argument, set INPUT_OVERRIDE, or pick one in the panel")
 }
 
+// set QUALITY_OVERRIDE to skip the quality dialog
+let QUALITY_OVERRIDE: Quality? = nil
+
+@MainActor
+func pickQuality() -> Quality? {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let alert = NSAlert()
+    alert.messageText = "Compression quality"
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 25))
+    popup.addItems(withTitles: Quality.allCases.map(\.rawValue))
+    popup.selectItem(at: Quality.allCases.firstIndex(of: .high) ?? 0)
+    alert.accessoryView = popup
+    alert.addButton(withTitle: "Compress")
+    alert.addButton(withTitle: "Cancel")
+    app.activate(ignoringOtherApps: true)
+    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    return Quality.allCases[popup.indexOfSelectedItem]
+}
+
+@MainActor
+func resolveQuality() throws -> Quality {
+    let args = CommandLine.arguments
+    if args.count > 2 {
+        guard let quality = Quality(rawValue: args[2]) else {
+            throw TrainerError.msg("unknown quality '\(args[2])'; expected one of "
+                                   + Quality.allCases.map(\.rawValue).joined(separator: ", "))
+        }
+        return quality
+    }
+    if let ovr = QUALITY_OVERRIDE { return ovr }
+    if let picked = pickQuality() { return picked }
+    throw TrainerError.msg("no quality selected")
+}
+
 let inputURL = try resolveInput()
+let QUALITY  = try resolveQuality()
 
 func discoverGLTFs(_ url: URL) -> [URL] {
     var isDir: ObjCBool = false
@@ -86,8 +122,6 @@ func loadManifests(_ url: URL) throws -> [(manifest: Manifest, dir: URL)] {
         default:     throw TrainerError.msg("unsupported input \(url.lastPathComponent); expected .gltf, manifest.json, or a directory")
     }
 }
-
-let QUALITY: Quality = .low
 
 struct PyramidPreset {
     let sizes:  [Int]      // K_GRIDS grid resolutions, finest first
