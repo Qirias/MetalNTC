@@ -8,7 +8,7 @@ import AppKit
 
 
 // set INPUT_OVERRIDE to skip the picker
-//   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/models/flighthelmet/scene.gltf"
+//   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCRenderer/assets/models/flighthelmet/scene.gltf"
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
 let INPUT_OVERRIDE: String? = nil
 
