@@ -307,15 +307,15 @@ inline void ntc_decode(float2                    uv,
 
     float ix0   = uv.x * float(g0_size - 1);
     float iy0   = uv.y * float(g0_size - 1);
-    int   ix0_0 = min(int(floor(ix0)), int(g0_size) - 2);
-    int   iy0_0 = min(int(floor(iy0)), int(g0_size) - 2);
+    int   ix0_0 = max(min(int(floor(ix0)), int(g0_size) - 2), 0);
+    int   iy0_0 = max(min(int(floor(iy0)), int(g0_size) - 2), 0);
     float fx0   = ix0 - float(ix0_0);
     float fy0   = iy0 - float(iy0_0);
 
     float ix1   = uv.x * float(g1_size - 1);
     float iy1   = uv.y * float(g1_size - 1);
-    int   ix0_1 = min(int(floor(ix1)), int(g1_size) - 2);
-    int   iy0_1 = min(int(floor(iy1)), int(g1_size) - 2);
+    int   ix0_1 = max(min(int(floor(ix1)), int(g1_size) - 2), 0);
+    int   iy0_1 = max(min(int(floor(iy1)), int(g1_size) - 2), 0);
     float fx1   = ix1 - float(ix0_1);
     float fy1   = iy1 - float(iy0_1);
 

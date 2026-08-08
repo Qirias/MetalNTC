@@ -1,0 +1,35 @@
+{
+  "models" : [
+    {
+      "name" : "SciFiHelmet",
+      "textures" : [
+        {
+          "fileName" : "SciFiHelmet_BaseColor.png",
+          "isSRGB" : true,
+          "semantics" : {
+            "Albedo" : "RGB"
+          }
+        },
+        {
+          "fileName" : "SciFiHelmet_Normal.png",
+          "semantics" : {
+            "Normal" : "RGB"
+          }
+        },
+        {
+          "fileName" : "SciFiHelmet_MetallicRoughness.png",
+          "semantics" : {
+            "Metalness" : "B",
+            "Roughness" : "G"
+          }
+        },
+        {
+          "fileName" : "SciFiHelmet_AmbientOcclusion.png",
+          "semantics" : {
+            "Occlusion" : "R"
+          }
+        }
+      ]
+    }
+  ]
+}

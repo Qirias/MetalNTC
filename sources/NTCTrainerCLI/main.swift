@@ -87,19 +87,25 @@ func loadManifests(_ url: URL) throws -> [(manifest: Manifest, dir: URL)] {
     }
 }
 
+let QUALITY: Quality = .low
+
 struct PyramidPreset {
     let sizes:  [Int]      // K_GRIDS grid resolutions, finest first
     let mipMap: [UInt32]   // lod -> index of the first grid in its pair
 }
 
-let PYRAMID_PRESETS: [Int: PyramidPreset] = [
-    4096: PyramidPreset(sizes:  [1024, 512, 256, 128, 64, 32, 16, 8],
-                        mipMap: [0, 0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6, 6]),
-    2048: PyramidPreset(sizes:  [512, 256, 128, 64, 32, 16, 8, 4],
-                        mipMap: [0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6, 6,  6]),
-    1024: PyramidPreset(sizes:  [256, 128, 64, 32, 16, 8, 4, 2],
-                        mipMap: [0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6,  6, 6]),
+let MIP_MAPS: [Int: [UInt32]] = [
+    4096: [0, 0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6, 6],
+    2048: [0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6, 6,  6],
+    1024: [0, 0, 0,  2, 2, 2,  4, 4, 4,  6, 6,  6, 6],
 ]
+
+func pyramidPreset(srcW: Int, quality: Quality) -> PyramidPreset? {
+    guard let mipMap = MIP_MAPS[srcW] else { return nil }
+    let base = srcW / quality.gridScale
+    return PyramidPreset(sizes:  (0..<K_GRIDS).map { max(base >> $0, 1) },
+                         mipMap: mipMap)
+}
 
 let K_BATCH = 4096
 let BITS: UInt32 = 4
@@ -212,12 +218,14 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     let SRC_H: Int
     (materialImages, SRC_W, SRC_H) = try textureSet.loadImages() 
 
-    guard let PRESET = PYRAMID_PRESETS[SRC_W] else {
-        throw TrainerError.msg("no pyramid preset for \(SRC_W)x\(SRC_H); add one to PYRAMID_PRESETS")
+    guard let PRESET = pyramidPreset(srcW: SRC_W, quality: QUALITY) else {
+        throw TrainerError.msg("no mip map for \(SRC_W)x\(SRC_H); add one to MIP_MAPS")
     }
     let PYRAMID_SIZES: [Int] = PRESET.sizes
     precondition(PYRAMID_SIZES.count == K_GRIDS)
     precondition(PRESET.mipMap.count == MAX_LODS)
+
+    print("quality \(QUALITY.rawValue) (gridScale \(QUALITY.gridScale)) -> grids \(PYRAMID_SIZES)")
 
     let PYRAMID_SLOT_FLOATS: [Int] = PYRAMID_SIZES.map { $0 * $0 * F_PER_GRID }
 
@@ -627,7 +635,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
                           gridBytes: gridBytes,
                           mlpFloats:  paramsFloats.advanced(by: OFFSET_MLP))
 
-    let ntcURL = textureSet.manifestDir.appendingPathComponent("\(textureSet.name).ntc")
+    let ntcURL = textureSet.manifestDir.appendingPathComponent(QUALITY.ntcFileName(base: textureSet.name))
     try writeNTC(ntcFile, to: ntcURL)
 
     let ntcBytes = (try? FileManager.default.attributesOfItem(atPath: ntcURL.path))?[.size] as? Int ?? 0
