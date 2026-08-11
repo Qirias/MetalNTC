@@ -12,8 +12,6 @@ import AppKit
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
 let INPUT_OVERRIDE: String? = nil
 
-// Start the picker in the renderer submodule's demo models if it is checked out
-// (guarded by fileExists below, so it is harmless when the submodule is absent).
 let DEFAULT_BROWSE_DIR = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()   // sources/NTCTrainerCLI
     .deletingLastPathComponent()   // sources
@@ -475,7 +473,18 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     inferArgTable.setAddress(outputBuffer.gpuAddress,     index: 1)
     inferArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
 
-    // Kaiming He uniform: a = sqrt(6/fan_in) gives uniform variance = 2/fan_in.
+    // https://en.wikipedia.org/wiki/Continuous_uniform_distribution
+    // Kaiming He uniform. Float.random() is uniform
+    // target Var(X) = 2/fan_in. Uniform(-a, a) has variance a^2/3
+    // (b - a)^2 / 12 where a and b are interval endpoints. Our a is the half-width:
+    // our lower endpoint is -a and upper is +a
+    // width = upper - lower = a - (-a) = 2a
+    // width^2 = (2a)^2 = 4a^2
+    // variance = 4a^2 / 12 = a^2/3
+
+    // a^2/3 = 2 / fan_in -> uniform variance = target variance
+    // a^2 = 6 / fan_in
+    // so a = sqrt(6/fan_in)
     let w1Bound = sqrtf(6.0 / Float(F_IN_RAW))
     let w2Bound = sqrtf(6.0 / Float(K_HIDDEN))
 

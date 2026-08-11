@@ -2,11 +2,6 @@
 import PackageDescription
 import Foundation
 
-// The renderer + its demo assets (models, hdr) are an optional git submodule at
-// sources/NTCRenderer. Build the NTCRenderer target only when the submodule is
-// actually checked out; a bare clone that skipped it is just the NTC core +
-// trainer and still builds. This is why the heavy assets do not live in the main
-// clone -- see the submodule at github.com/Qirias/MetalNTC-Renderer.
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 let rendererPresent = FileManager.default.fileExists(atPath: packageDir + "/sources/NTCRenderer/renderer.swift")
 

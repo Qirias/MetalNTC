@@ -80,7 +80,9 @@ kernel void grid_mlp_train(device               float*                          
     pe_encode(posf, features + F_TOTAL);
 
     features[F_TOTAL + PE_DIM] = float(lod) / float(MAX_LODS - 1);
-    for (uint i = F_IN_RAW; i < F_IN; i++) features[i] = 0.0f;   // zero padded lanes
+    for (uint i = F_IN_RAW; i < F_IN; i++) {
+        features[i] = 0.0f;   // zero padded lanes
+    }
 
     // ========
     // Forward
