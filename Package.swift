@@ -20,12 +20,6 @@ var targets: [Target] = [
         path: "sources/NTCShared",
         publicHeadersPath: "include"
     ),
-    // SwiftPM refuses to mix C++ and Swift sources in one target
-    .target(
-        name: "AAPLMath",
-        path: "sources/AAPLMath",
-        publicHeadersPath: "include"
-    ),
     .target(
         name: "NTCCore",
         dependencies: ["NTCShared"],
@@ -47,11 +41,20 @@ var targets: [Target] = [
 
 if rendererPresent {
     products.append(.executable(name: "NTCRenderer", targets: ["NTCRenderer"]))
+    // SwiftPM refuses to mix C++ and Swift sources in one target, so Apple's
+    // math utilities get their own
+    targets.append(.target(
+        name: "AAPLMath",
+        path: "sources/NTCRenderer/AAPLMath",
+        publicHeadersPath: "include"
+    ))
     targets.append(.executableTarget(
         name: "NTCRenderer",
         dependencies: ["NTCCore", "NTCShared", "AAPLMath"],
         path: "sources/NTCRenderer",
-        exclude: ["assets", "README.md"],
+        // AAPLMath sits under this path but is its own target; without the
+        // exclude SwiftPM sweeps its .cpp into this Swift target and refuses
+        exclude: ["assets", "README.md", "AAPLMath"],
         resources: [.process("shaders")],
         swiftSettings: [.interoperabilityMode(.Cxx)]
     ))
