@@ -1,0 +1,23 @@
+[gd_resource type="StandardMaterial3D" load_steps=7 format=3 uid="acg_1etqa3ph"]
+
+[ext_resource type="Texture2D" uid="uid://acg_me0joht8" id="Color" path="./ManholeCover008_2K-PNG_Color.png"]
+[ext_resource type="Texture2D" uid="uid://acg_apcuszdg" id="AmbientOcclusion" path="./ManholeCover008_2K-PNG_AmbientOcclusion.png"]
+[ext_resource type="Texture2D" uid="uid://acg_m25k1gei" id="Metalness" path="./ManholeCover008_2K-PNG_Metalness.png"]
+[ext_resource type="Texture2D" uid="uid://acg_4jvy9nto" id="Displacement" path="./ManholeCover008_2K-PNG_Displacement.png"]
+[ext_resource type="Texture2D" uid="uid://acg_lizyme75" id="Roughness" path="./ManholeCover008_2K-PNG_Roughness.png"]
+[ext_resource type="Texture2D" uid="uid://acg_vjd6mxfu" id="NormalGL" path="./ManholeCover008_2K-PNG_NormalGL.png"]
+[resource]
+albedo_texture = ExtResource("Color")
+ao_enabled = true
+ao_texture = ExtResource("AmbientOcclusion")
+ao_texture_channel = 4
+metallic_texture = ExtResource("Metalness")
+metallic = 1.0
+metallic_texture_channel = 4
+roughness_texture = ExtResource("Roughness")
+roughness_texture_channel = 4
+normal_texture = ExtResource("NormalGL")
+normal_enabled = true
+heightmap_texture = ExtResource("Displacement")
+heightmap_scale = 1.0
+heightmap_enabled = true

@@ -1,0 +1,38 @@
+{
+  "models": [
+    {
+      "name": "ManholeCover008_2K",
+      "textures": [
+        {
+          "fileName": "ManholeCover008_2K-PNG_Color.png",
+          "isSRGB": true,
+          "semantics": { "Albedo": "RGB" }
+        },
+        {
+          "fileName": "ManholeCover008_2K-PNG_NormalGL.png",
+          "semantics": { "Normal": "RGB" }
+        },
+        {
+          "fileName": "ManholeCover008_2K-PNG_Roughness.png",
+          "semantics": { "Roughness": "R" }
+        },
+        {
+          "fileName": "ManholeCover008_2K-PNG_Metalness.png",
+          "semantics": { "Metalness": "R" }
+        },
+        {
+          "fileName": "ManholeCover008_2K-PNG_AmbientOcclusion.png",
+          "semantics": { "Occlusion": "R" }
+        },
+        {
+          "fileName": "ManholeCover008_2K-PNG_Displacement.png",
+          "semantics": { "Displacement": "R" }
+        },
+        {
+          "fileName": "ManholeCover008_2K-PNG_Opacity.png",
+          "semantics": { "AlphaMask": "R" }
+        }
+      ]
+    }
+  ]
+}

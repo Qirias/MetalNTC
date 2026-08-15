@@ -10,7 +10,7 @@ import AppKit
 // set INPUT_OVERRIDE to skip the picker
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCRenderer/assets/models/flighthelmet/scene.gltf"
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
-let INPUT_OVERRIDE: String? = nil
+let INPUT_OVERRIDE: String? = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover008_2K-PNG"
 
 let DEFAULT_BROWSE_DIR = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()   // sources/NTCTrainerCLI
@@ -423,12 +423,14 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         }
     }
 
+    #if NTC_DEBUG
     print("pyramid layout: K_GRIDS=\(K_GRIDS)  F_PER_GRID=\(F_PER_GRID)")
     for i in 0..<K_GRIDS {
         print(String(format: "  pyramid[%d] %4dx%-4d x %d ch    offset=%-10d  floats=%d",
                      i, PYRAMID_SIZES[i], PYRAMID_SIZES[i], F_PER_GRID,
                      PYRAMID_OFFSETS[i], PYRAMID_SLOT_FLOATS[i]))
     }
+    #endif
 
     let setDesc = MTLResidencySetDescriptor()
     setDesc.label = "grid_mlp_train.residency"
@@ -562,6 +564,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         signalValue += 1
         ctx.queue.signalEvent(event, value: signalValue)
 
+        #if NTC_DEBUG
         if step % logEvery == 0 {
             event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
             var sumLoss: Float = 0
@@ -570,6 +573,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
             }
             print("step \(step)\tmean loss = \(sumLoss / Float(K_BATCH))")
         }
+        #endif
     }
 
     event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
@@ -645,6 +649,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         signalValue += 1
         ctx.queue.signalEvent(event, value: signalValue)
 
+        #if NTC_DEBUG
         if step % logEvery == 0 {
             event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
             var sumLoss: Float = 0
@@ -653,6 +658,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
             }
             print("fine-tune step \(step)\tmean loss = \(sumLoss / Float(K_BATCH))")
         }
+        #endif
     }
 
     event.wait(untilSignaledValue: signalValue, timeoutMS: 5000)
@@ -684,30 +690,29 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     let ntcBytes = (try? FileManager.default.attributesOfItem(atPath: ntcURL.path))?[.size] as? Int ?? 0
     print(String(format: "wrote %@  (%d bytes = %.2f MB)", ntcURL.path, ntcBytes, Double(ntcBytes) / (1024 * 1024)))
 
-    // infer all mips and write them to two [4096+2048, 4096] texture atlases
+    #if NTC_DEBUG
     let ATLAS_W = SRC_W + SRC_W / 2
     let ATLAS_H = SRC_H
 
     var atlases: [[Float]] = textureSet.slots.map { s in
         [Float](repeating: 0, count: ATLAS_W * ATLAS_H * s.channels)
     }
+    #endif
 
     let outPtr = outputBuffer.contents().bindMemory(to: Float.self,
                                                     capacity: SRC_H * SRC_W * K_OUT)
 
-    // pyramid mip texels back to CPU for PSNR (one slice at a time)
-    var pyramidScratch = [SIMD4<Float>](repeating: .zero, count: SRC_H * SRC_W)
+    let pyramidScratch = UnsafeMutablePointer<SIMD4<Float>>.allocate(capacity: SRC_H * SRC_W)
+    defer { pyramidScratch.deallocate() }
 
     func readPyramidSlice(lod: Int, slice: Int, outWL: Int, outHL: Int) {
         let region = MTLRegionMake2D(0, 0, outWL, outHL)
-        pyramidScratch.withUnsafeMutableBufferPointer { buf in
-            pyramidBuilder.pyramidTexture.getBytes(buf.baseAddress!,
-                                                   bytesPerRow: outWL * MemoryLayout<SIMD4<Float>>.stride,
-                                                   bytesPerImage: outWL * outHL * MemoryLayout<SIMD4<Float>>.stride,
-                                                   from: region,
-                                                   mipmapLevel: lod,
-                                                   slice: slice)
-        }
+        pyramidBuilder.pyramidTexture.getBytes(pyramidScratch,
+                                               bytesPerRow: outWL * MemoryLayout<SIMD4<Float>>.stride,
+                                               bytesPerImage: outWL * outHL * MemoryLayout<SIMD4<Float>>.stride,
+                                               from: region,
+                                               mipmapLevel: lod,
+                                               slice: slice)
     }
 
     func materialMse(_ s: TextureSlot, outWL: Int, outHL: Int) -> Double {
@@ -755,14 +760,15 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         ctx.queue.signalEvent(event, value: signalValue)
         event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
 
-//        for slot in textureSet.slots {
-//            readPyramidSlice(lod: lod, slice: slot.sliceIndex, outWL: outWL, outHL: outHL)
-//            let mse  = materialMse(slot, outWL: outWL, outHL: outHL)
-//            let psnr = mse > 0 ? 10.0 * log10(1.0 / mse) : Double.infinity
-//            print(String(format: "  lod %2d  %-10s %4dx%-4d  MSE %.3e  PSNR %.2f dB",
-//                         lod, (slot.semantic as NSString).utf8String!, outWL, outHL, mse, psnr))
-//        }
+        for slot in textureSet.slots {
+            readPyramidSlice(lod: lod, slice: slot.sliceIndex, outWL: outWL, outHL: outHL)
+            let mse  = materialMse(slot, outWL: outWL, outHL: outHL)
+            let psnr = mse > 0 ? 10.0 * log10(1.0 / mse) : Double.infinity
+            print(String(format: "  lod %2d  %-10s %4dx%-4d  MSE %.3e  PSNR %.2f dB",
+                         lod, (slot.semantic as NSString).utf8String!, outWL, outHL, mse, psnr))
+        }
 
+        #if NTC_DEBUG
         // mip 0 goes on the left, rest of the mips to the right and down
         let xOff: Int
         let yOff: Int
@@ -791,8 +797,10 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
                 }
             }
         }
+        #endif
     }
 
+    #if NTC_DEBUG
     let outDir = textureSet.manifestDir.appendingPathComponent("output")
     try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
     for (si, slot) in textureSet.slots.enumerated() {
@@ -802,6 +810,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
                               channels: slot.channels)
         try save_image(img, to: outDir.appendingPathComponent("grid_mlp_\(textureSet.name)_\(slot.semantic.lowercased())_lod_atlas.png"))
     }
+    #endif
 }
 
 let sources = try loadManifests(inputURL)

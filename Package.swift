@@ -5,6 +5,9 @@ import Foundation
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 let rendererPresent = FileManager.default.fileExists(atPath: packageDir + "/sources/NTCRenderer/renderer.swift")
 
+let debugEnabled = false
+let trainerSwiftSettings: [SwiftSetting] = debugEnabled ? [.define("NTC_DEBUG")] : []
+
 var products: [Product] = [
     .library(name: "NTCCore",   targets: ["NTCCore"]),
     .library(name: "NTCAssets", targets: ["NTCAssets"]),
@@ -37,7 +40,8 @@ var targets: [Target] = [
     .executableTarget(
         name: "NTCTrainerCLI",
         dependencies: ["NTCAssets", "NTCCore", "NTCShared"],
-        path: "sources/NTCTrainerCLI"
+        path: "sources/NTCTrainerCLI",
+        swiftSettings: trainerSwiftSettings
     ),
     .testTarget(
         name: "NTCCoreTests",

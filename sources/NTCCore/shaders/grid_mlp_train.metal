@@ -187,7 +187,7 @@ kernel void grid_mlp_train(device               float*                          
 
     for (uint i = 0; i < F_PER_GRID; i++) {
         for (uint corner = 0; corner < 4; corner++) {
-        atomic_add_fixed(&grads[g1_offset + c1[corner] + i], w1[corner] * d_feats[F_PER_GRID + i]);
+            atomic_add_fixed(&grads[g1_offset + c1[corner] + i], w1[corner] * d_feats[F_PER_GRID + i]);
         }
     }
 }
