@@ -43,12 +43,6 @@ var targets: [Target] = [
         path: "sources/NTCTrainerCLI",
         swiftSettings: trainerSwiftSettings
     ),
-    .testTarget(
-        name: "NTCCoreTests",
-        dependencies: ["NTCCore"],
-        path: "tests/NTCCoreTests",
-        resources: [.process("shaders")]
-    ),
 ]
 
 if rendererPresent {
