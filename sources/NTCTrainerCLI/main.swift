@@ -736,6 +736,9 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         return mse / Double(outWL * outHL * s.channels)
     }
 
+    var psnrTable = [[Double]](repeating: [Double](repeating: 0, count: pyramidBuilder.mipCount),
+                               count: textureSet.slots.count)
+
     for lod in 0..<pyramidBuilder.mipCount {
         let outWL = max(SRC_W >> lod, 1)
         let outHL = max(SRC_H >> lod, 1)
@@ -760,12 +763,11 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         ctx.queue.signalEvent(event, value: signalValue)
         event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
 
-        for slot in textureSet.slots {
+        // collected here, printed as one semantic-per-row table after the loop
+        for (si, slot) in textureSet.slots.enumerated() {
             readPyramidSlice(lod: lod, slice: slot.sliceIndex, outWL: outWL, outHL: outHL)
-            let mse  = materialMse(slot, outWL: outWL, outHL: outHL)
-            let psnr = mse > 0 ? 10.0 * log10(1.0 / mse) : Double.infinity
-            print(String(format: "  lod %2d  %-10s %4dx%-4d  MSE %.3e  PSNR %.2f dB",
-                         lod, (slot.semantic as NSString).utf8String!, outWL, outHL, mse, psnr))
+            let mse = materialMse(slot, outWL: outWL, outHL: outHL)
+            psnrTable[si][lod] = mse > 0 ? 10.0 * log10(1.0 / mse) : Double.infinity
         }
 
         #if NTC_DEBUG
@@ -801,6 +803,17 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     }
 
     #if NTC_DEBUG
+    print("\nPSNR (dB) for \(textureSet.name), \(SRC_W)x\(SRC_H)")
+    var header = String(repeating: " ", count: 14)
+    for lod in 0..<pyramidBuilder.mipCount { header += String(format: "%7d", max(SRC_W >> lod, 1)) }
+    print(header)
+    for (si, slot) in textureSet.slots.enumerated() {
+        var line = slot.semantic.padding(toLength: 14, withPad: " ", startingAt: 0)
+        for psnr in psnrTable[si] { line += String(format: "%7.2f", psnr) }
+        print(line)
+    }
+    print("")
+    
     let outDir = textureSet.manifestDir.appendingPathComponent("output")
     try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
     for (si, slot) in textureSet.slots.enumerated() {
