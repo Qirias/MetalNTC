@@ -8,11 +8,12 @@ using namespace metal;
 #define SAMPLE_LOSS   3
 #define SAMPLE_STRIDE 4
 
-kernel void grid_mlp_train(device               float*                                  params  [[buffer(0)]],
-                           device               float*                                  samples [[buffer(1)]],
-                                    constant    StepConstants&                          consts  [[buffer(2)]],
-                                                texture2d_array<float, access::read>    pyramid [[texture(0)]],
-                                                uint                                    gid     [[thread_position_in_grid]]) {
+kernel void grid_mlp_train(device               float*                                  params          [[buffer(0)]],
+                           device               float*                                  samples         [[buffer(1)]],
+                                    constant    StepConstants&                          consts          [[buffer(2)]],
+                           device         const float*                                  texImportance   [[buffer(3)]],
+                                                texture2d_array<float, access::read>    pyramid         [[texture(0)]],
+                                                uint                                    gid             [[thread_position_in_grid]]) {
     if (gid >= consts.kBatch) return;
 
     device atomic_int* grads = reinterpret_cast<device atomic_int*>(params + consts.total);
@@ -107,7 +108,7 @@ kernel void grid_mlp_train(device               float*                          
     for (uint k = 0; k < consts.kOut; k++) {
         diff[k] = float(pred[k]) - gt[k];
         loss += diff[k]*diff[k];
-        d_pred[k] = 2 * diff[k] / float(consts.kOut) / float(consts.kBatch);
+        d_pred[k] = 2 * diff[k] * texImportance[k] / float(consts.kOut) / float(consts.kBatch);
     }
     samples[sample_base + SAMPLE_LOSS] = loss / float(consts.kOut);
 

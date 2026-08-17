@@ -142,6 +142,16 @@ func pyramidPreset(srcW: Int, quality: Quality) -> PyramidPreset? {
 let K_BATCH = 4096
 let BITS: UInt32 = 4
 
+let IMPORTANCE_WEIGHTS: [String: Float] = [
+    "Albedo":       2.0,
+    "Normal":       1.0,
+    "Roughness":    0.35,
+    "Metalness":    0.35,
+    "Occlusion":    0.35,
+    "Displacement": 0.35,
+    "AlphaMask":    0.35,
+]
+
 func fake_quant(bits: UInt32) -> (q: Float, lo: Float, hi: Float) {
     if bits == 0 {
         return (0, 0, 0)
@@ -298,6 +308,21 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     samplesBuffer.label = "NTC.trainSamples"
     let samplesFloats = samplesBuffer.contents().bindMemory(to: Float.self, capacity: K_BATCH * SAMPLE_STRIDE)
 
+    // one weight per OUTPUT CHANNEL, expanded from the per-semantic table
+    let texImportanceBuffer = ctx.device.makeBuffer(length: K_OUT_MAX * MemoryLayout<Float>.stride,
+                                            options: .storageModeShared)!
+    texImportanceBuffer.label = "NTC.importanceWeights"
+    let texImportance = texImportanceBuffer.contents().bindMemory(to: Float.self, capacity: K_OUT_MAX)
+    for i in 0..<K_OUT_MAX {
+        texImportance[i] = 1.0
+    }
+    for slot in textureSet.slots {
+        let w = IMPORTANCE_WEIGHTS[slot.semantic] ?? 1.0
+        for c in 0..<slot.channels {
+            texImportance[slot.channelOffset + c] = w
+        }
+    }
+
     let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * K_OUT * MemoryLayout<Float>.stride,
                                              options: .storageModeShared)!
     outputBuffer.label = "NTC.inferOutput"
@@ -434,11 +459,12 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
 
     let setDesc = MTLResidencySetDescriptor()
     setDesc.label = "grid_mlp_train.residency"
-    setDesc.initialCapacity = 11
+    setDesc.initialCapacity = 12
     let residencySet = try ctx.device.makeResidencySet(descriptor: setDesc)
     residencySet.addAllocation(paramsBuffer)
     residencySet.addAllocation(samplesBuffer)
     residencySet.addAllocation(stepConstsBuffer)
+    residencySet.addAllocation(texImportanceBuffer)
     residencySet.addAllocation(outputBuffer)
     residencySet.addAllocation(mBuffer)
     residencySet.addAllocation(vBuffer)
@@ -454,9 +480,10 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     trainArgDesc.maxBufferBindCount  = 4
     trainArgDesc.maxTextureBindCount = 1
     let trainArgTable = try ctx.device.makeArgumentTable(descriptor: trainArgDesc)
-    trainArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
-    trainArgTable.setAddress(samplesBuffer.gpuAddress,    index: 1)
-    trainArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
+    trainArgTable.setAddress(paramsBuffer.gpuAddress,           index: 0)
+    trainArgTable.setAddress(samplesBuffer.gpuAddress,          index: 1)
+    trainArgTable.setAddress(stepConstsBuffer.gpuAddress,       index: 2)
+    trainArgTable.setAddress(texImportanceBuffer.gpuAddress,    index: 3)
     trainArgTable.setTexture(pyramidBuilder.pyramidTexture.gpuResourceID, index: 0)
 
     let adamArgDesc = MTL4ArgumentTableDescriptor()

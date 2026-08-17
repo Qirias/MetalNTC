@@ -6,7 +6,7 @@ let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().pat
 let rendererPresent = FileManager.default.fileExists(atPath: packageDir + "/sources/NTCRenderer/renderer.swift")
 
 /// After flipping "debugEnabled" run ``swift build -c release --product NTCTrainerCLI``
-let debugEnabled = false
+let debugEnabled = true
 let trainerSwiftSettings: [SwiftSetting] = debugEnabled ? [.define("NTC_DEBUG")] : []
 
 var products: [Product] = [
