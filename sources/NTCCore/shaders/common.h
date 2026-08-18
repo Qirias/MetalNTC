@@ -37,26 +37,29 @@ struct StepConstants {
 };
 
 // a cheap piecewise approximation of GELU
+constant float HGELU_K     = 3.0 / 2.0f;
+constant float HGELU_INV_K = 1.0f / HGELU_K;
+
 inline float hard_gelu(float x) {
-    return 0.5f * x * (1.0f + clamp(x * 0.5f, -1.0f, 1.0f));
+    return 0.5f * x * (1.0f + clamp(x * HGELU_INV_K, -1.0f, 1.0f));
 }
 
 inline half hard_gelu(half x) {
-    return 0.5h * x * (1.0h + clamp(x * 0.5h, -1.0h, 1.0h));
+    return 0.5h * x * (1.0h + clamp(x * half(HGELU_INV_K), -1.0h, 1.0h));
 }
 
 // https://en.wikipedia.org/wiki/Product_rule
 // derived from the product rule on out = 0.5 * x * (1 + c)
-// where c = clamp(x/2, -1, 1):
+// where c = clamp(x/k, -1, 1):
 //   d(out)/dx = 0.5 * (1 + c)       (derivative of 0.5*x, times (1+c))
 //             + 0.5 * x * dc/dx     (0.5*x, times derivative of (1+c))
-// dc/dx is 0.5 when x is in [-2, 2] (clamp is just x/2 there), and 0
+// dc/dx is 1/k when x is in [-k, k] (clamp is just x/k there), and 0
 // outside. The in_band flag picks the right case.
 
 inline float hard_gelu_prime(float x) {
-    float c = clamp(x * 0.5f, -1.0f, 1.0f);
-    float in_band = (x >= -2.0f && x <= 2.0f) ? 1.0f : 0.0f;
-    return 0.5f * (1.0f + c) + 0.5f * x * 0.5f * in_band;
+    float c = clamp(x * HGELU_INV_K, -1.0f, 1.0f);
+    float in_band = (x >= -HGELU_K && x <= HGELU_K) ? 1.0f : 0.0f;
+    return 0.5f * (1.0f + c) + 0.5f * x * HGELU_INV_K * in_band;
 }
 
 inline void atomic_add_fixed(device atomic_int* slot, float val) {
@@ -108,10 +111,10 @@ inline void bilinear_sample(device const float* grid,
 
 inline void pe_encode(float2 posf, thread float* pe) {
     for (uint i = 0; i < PE_WAVES; i++) {
-        pe[4*i + 0] = fract(posf.x)         * 2.0 - 1.0; // saw x
-        pe[4*i + 1] = fract(posf.y)         * 2.0 - 1.0; // saw y
-        pe[4*i + 2] = fract(posf.x + 0.25)  * 2.0 - 1.0; // saw shift x
-        pe[4*i + 3] = fract(posf.y + 0.25)  * 2.0 - 1.0; // saw shift y
+        pe[4*i + 0] = fract(posf.x)         * 2.0 - 1.0; // x
+        pe[4*i + 1] = fract(posf.y)         * 2.0 - 1.0; // y
+        pe[4*i + 2] = fract(posf.x + 0.25)  * 2.0 - 1.0; // shift x
+        pe[4*i + 3] = fract(posf.y + 0.25)  * 2.0 - 1.0; // shift y
         posf *= 2.0;
     }
 }
