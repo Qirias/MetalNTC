@@ -308,21 +308,28 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     samplesBuffer.label = "NTC.trainSamples"
     let samplesFloats = samplesBuffer.contents().bindMemory(to: Float.self, capacity: K_BATCH * SAMPLE_STRIDE)
 
-    // one weight per OUTPUT CHANNEL, expanded from the per-semantic table
-    let texImportanceBuffer = ctx.device.makeBuffer(length: K_OUT_MAX * MemoryLayout<Float>.stride,
-                                            options: .storageModeShared)!
-    texImportanceBuffer.label = "NTC.importanceWeights"
-    let texImportance = texImportanceBuffer.contents().bindMemory(to: Float.self, capacity: K_OUT_MAX)
+
+    let channelImportanceBuffer = ctx.device.makeBuffer(length: K_OUT_MAX * MemoryLayout<Float>.stride,
+                                                        options: .storageModeShared)!
+    channelImportanceBuffer.label = "NTC.channelImportance"
+    let channelImportance = channelImportanceBuffer.contents().bindMemory(to: Float.self, capacity: K_OUT_MAX)
     for i in 0..<K_OUT_MAX {
-        texImportance[i] = 1.0
-    }
-    for slot in textureSet.slots {
-        let w = IMPORTANCE_WEIGHTS[slot.semantic] ?? 1.0
-        for c in 0..<slot.channels {
-            texImportance[slot.channelOffset + c] = w
-        }
+        channelImportance[i] = 1.0
     }
 
+    var rawWeightSum: Float = 0
+    for slot in textureSet.slots {
+        rawWeightSum += (IMPORTANCE_WEIGHTS[slot.semantic] ?? 1.0) * Float(slot.channels)
+    }
+    let importanceNorm = rawWeightSum > 0 ? Float(K_OUT) / rawWeightSum : 1.0
+
+    for slot in textureSet.slots {
+        let w = (IMPORTANCE_WEIGHTS[slot.semantic] ?? 1.0) * importanceNorm
+        for c in 0..<slot.channels {
+            channelImportance[slot.channelOffset + c] = w
+        }
+    }
+    
     let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * K_OUT * MemoryLayout<Float>.stride,
                                              options: .storageModeShared)!
     outputBuffer.label = "NTC.inferOutput"
@@ -464,7 +471,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     residencySet.addAllocation(paramsBuffer)
     residencySet.addAllocation(samplesBuffer)
     residencySet.addAllocation(stepConstsBuffer)
-    residencySet.addAllocation(texImportanceBuffer)
+    residencySet.addAllocation(channelImportanceBuffer)
     residencySet.addAllocation(outputBuffer)
     residencySet.addAllocation(mBuffer)
     residencySet.addAllocation(vBuffer)
@@ -483,7 +490,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     trainArgTable.setAddress(paramsBuffer.gpuAddress,           index: 0)
     trainArgTable.setAddress(samplesBuffer.gpuAddress,          index: 1)
     trainArgTable.setAddress(stepConstsBuffer.gpuAddress,       index: 2)
-    trainArgTable.setAddress(texImportanceBuffer.gpuAddress,    index: 3)
+    trainArgTable.setAddress(channelImportanceBuffer.gpuAddress,    index: 3)
     trainArgTable.setTexture(pyramidBuilder.pyramidTexture.gpuResourceID, index: 0)
 
     let adamArgDesc = MTL4ArgumentTableDescriptor()
