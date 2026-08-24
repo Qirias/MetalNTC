@@ -20,7 +20,7 @@
 //                                                  (only when header.mlpDType == NTC_MLP_DTYPE_FP16)
 //
 // mlpFloatCount is derived from the header architecture fields:
-//   F_IN  = roundUp(2 * fPerGrid + 4 * peWaves + 1, 16)   // padded fan-in
+//   F_IN  = roundUp(2 * fPerGrid + 4 * peWaves + 1, 16)   // padded input dim
 //   count = F_IN * kHidden + kHidden
 //         + kHidden * kHidden + kHidden
 //         + kHidden * kOutMax + kOutMax

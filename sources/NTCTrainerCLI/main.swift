@@ -6,75 +6,12 @@ import Foundation
 import QuartzCore
 import AppKit
 
-enum TrainerError: Error, CustomStringConvertible {
-    case msg(String)
-
-    var description: String {
-        switch self {
-            case .msg(let text):
-                return text
-        }
-    }
-}
-
 // MARK: Input selection
 
-// σet INPUT_OVERRIDE to compress a fixed path and skip the open panel
+// Set INPUT_OVERRIDE to compress a fixed path and skip the open panel
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCRenderer/assets/models/flighthelmet/scene.gltf"
 let INPUT_OVERRIDE: String? = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover008_2K-PNG"
-
-let DEFAULT_BROWSE_DIR = URL(fileURLWithPath: #filePath)
-    .deletingLastPathComponent()   // sources/NTCTrainerCLI
-    .deletingLastPathComponent()   // sources
-    .appendingPathComponent("NTCRenderer/assets/models")
-
-@MainActor
-func pickInput() -> URL {
-    let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)
-
-    let panel = NSOpenPanel()
-    panel.title                   = "Select a model to compress"
-    panel.message                 = "Choose a .gltf, a manifest.json, or a texture directory"
-    panel.prompt                  = "Select Quality"
-    panel.canChooseFiles          = true
-    panel.canChooseDirectories    = true
-    panel.allowsMultipleSelection = false
-    if FileManager.default.fileExists(atPath: DEFAULT_BROWSE_DIR.path) {
-        panel.directoryURL = DEFAULT_BROWSE_DIR
-    }
-
-    app.activate(ignoringOtherApps: true)
-    guard panel.runModal() == .OK, let url = panel.url else {
-        print("cancelled")
-        exit(0)
-    }
-    return url
-}
-
-@MainActor
-func pickQuality() -> Quality {
-    let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)
-
-    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 25))
-    popup.addItems(withTitles: Quality.allCases.map(\.rawValue))
-    popup.selectItem(at: Quality.allCases.firstIndex(of: .high)!)
-
-    let alert = NSAlert()
-    alert.messageText   = "Compression quality"
-    alert.accessoryView = popup
-    alert.addButton(withTitle: "Compress")
-    alert.addButton(withTitle: "Cancel")
-
-    app.activate(ignoringOtherApps: true)
-    guard alert.runModal() == .alertFirstButtonReturn else {
-        print("cancelled")
-        exit(0)
-    }
-    return Quality.allCases[popup.indexOfSelectedItem]
-}
 
 let inputURL: URL
 if let path = INPUT_OVERRIDE, !path.isEmpty {
@@ -85,164 +22,8 @@ if let path = INPUT_OVERRIDE, !path.isEmpty {
 
 let QUALITY = pickQuality()
 
-func loadManifest(at url: URL) throws -> (manifest: Manifest, dir: URL) {
-    var isDirectory: ObjCBool = false
-    FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-
-    if !isDirectory.boolValue {
-        switch url.pathExtension.lowercased() {
-            case "gltf":
-                return (try ManifestGen.generate(fromGLTF: url), url.deletingLastPathComponent())
-            case "json":
-                return (try Manifest.load(from: url), url.deletingLastPathComponent())
-            default:
-                throw TrainerError.msg("\(url.lastPathComponent) is neither a .gltf nor a manifest.json")
-        }
-    }
-
-    let manifestURL = url.appendingPathComponent("manifest.json")
-    if FileManager.default.fileExists(atPath: manifestURL.path) {
-        return (try Manifest.load(from: manifestURL), url)
-    }
-
-    let entries = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
-    let gltfs   = entries.filter { $0.pathExtension.lowercased() == "gltf" }
-    guard let gltfURL = gltfs.sorted(by: { $0.path < $1.path }).first else {
-        throw TrainerError.msg("\(url.lastPathComponent) holds neither a manifest.json nor a .gltf")
-    }
-    return (try ManifestGen.generate(fromGLTF: gltfURL), url)
-}
-
-struct PyramidPreset {
-    let sizes:  [Int]      // K_GRIDS grid resolutions, finest first
-    let mipMap: [UInt32]   // lod -> index of the first grid in its pair
-}
-
-let MIP_MAPS: [Int: [UInt32]] = [
-    4096: [0, 0, 0, 0, 2, 2, 2, 4, 4, 4, 6, 6, 6],
-    2048: [0, 0, 0, 2, 2, 2, 4, 4, 4, 6, 6, 6, 6],
-    1024: [0, 0, 0, 2, 2, 2, 4, 4, 4, 6, 6, 6, 6],
-]
-
-func pyramidPreset(srcW: Int, quality: Quality) -> PyramidPreset? {
-    guard let mipMap = MIP_MAPS[srcW] else {
-        return nil
-    }
-    let base  = srcW / quality.gridScale
-    let sizes = (0..<K_GRIDS).map { grid in
-        max(base >> grid, 1)
-    }
-    return PyramidPreset(sizes: sizes, mipMap: mipMap)
-}
-
-let K_BATCH = 4096
-
-let BITS: UInt32 = 4
-
-let IMPORTANCE_WEIGHTS: [String: Float] = [
-    "Albedo":       2.0,
-    "Normal":       1.0,
-    "Roughness":    0.35,
-    "Metalness":    0.35,
-    "Occlusion":    0.35,
-    "Displacement": 0.35,
-    "AlphaMask":    0.35,
-]
-
-func fake_quant(bits: UInt32) -> (q: Float, lo: Float, hi: Float) {
-    let N = Float(1 << bits)
-    let q = 1.0 / N
-    let lo = -(N - 1) / 2 * q
-    let hi =  N / 2 * q
-    return (q, lo, hi)
-}
-
-let SAMPLE_X      = 0
-let SAMPLE_Y      = 1
-let SAMPLE_LOD    = 2
-let SAMPLE_LOSS   = 3
-let SAMPLE_STRIDE = 4
-
-let nSteps  = 10000
-let logEvery = 100
-let BETA1: Float = 0.9
-let BETA2: Float = 0.999
-let LR_GRID_MAX: Float = 0.01
-let LR_MLP_MAX:  Float = 0.005
-let UNIFORM_LOD_FRACTION: Float = 0.05
-
-// cosine annealing to 0 across [0, total)
-func cosineLr(step: Int, total: Int, lrMax: Float) -> Float {
-    let denom = Float(max(total - 1, 1))
-    let t = Float(step) / denom
-    return lrMax * 0.5 * (1.0 + cosf(.pi * t))
-}
-
-// choose randomly a level proportionally to the mip level's area by sampling
-// from an exponential distribution. To mitigate undersampling of low resolution
-// mip levels, 5% of the batches sample their LOD from a uniform distribution
-// of the entire range of the mip chain
-func sampleBatchLod(lodMax: Int) -> Int {
-    if Float.random(in: 0..<1) < UNIFORM_LOD_FRACTION {
-        return Int.random(in: 0..<lodMax)
-    }
-    let x = Float.random(in: Float.leastNormalMagnitude..<1.0)
-    let lod = Int(floor(-logf(x) / logf(4.0)))
-    return min(max(lod, 0), lodMax - 1)
-}
-
-struct AdamConstants {
-    var lrGrid: Float
-    var lrMlp:  Float
-    var bc1:    Float
-    var bc2:    Float
-}
-
-struct StepConstants {
-    var kBatch:             UInt32
-    var pyramidOffsets:     (UInt32, UInt32, UInt32, UInt32,
-                             UInt32, UInt32, UInt32, UInt32,
-                             UInt32)
-    var pyramidSizes:       (UInt32, UInt32, UInt32, UInt32,
-                             UInt32, UInt32, UInt32, UInt32)
-    var offsetW1:           UInt32
-    var offsetB1:           UInt32
-    var offsetW2:           UInt32
-    var offsetB2:           UInt32
-    var offsetW3:           UInt32
-    var offsetB3:           UInt32
-    var total:              UInt32
-    var bits:               UInt32
-    var q:                  Float
-    var lo:                 Float
-    var hi:                 Float
-    var adamOffset:         UInt32
-    var inferLod:           UInt32
-    // max mips 13 for 4k textures
-    var neuralMipsForLod:   (UInt32, UInt32, UInt32, UInt32,
-                            UInt32, UInt32, UInt32, UInt32,
-                            UInt32, UInt32, UInt32, UInt32,
-                            UInt32)
-    var kOut:                UInt32
-    var nSlices:             UInt32
-    // K_OUT_MAX slice channels and offsets
-    var sliceChannels:       (UInt32, UInt32, UInt32, UInt32,
-                              UInt32, UInt32, UInt32, UInt32,
-                              UInt32, UInt32, UInt32, UInt32,
-                              UInt32, UInt32, UInt32, UInt32)
-    var sliceChannelOffsets: (UInt32, UInt32, UInt32, UInt32,
-                              UInt32, UInt32, UInt32, UInt32,
-                              UInt32, UInt32, UInt32, UInt32,
-                              UInt32, UInt32, UInt32, UInt32)
-    var srcW:                UInt32
-    var srcH:                UInt32
-    var mipCount:            UInt32
-    var posScale:            Float
-}
-
 let ctx      = MetalContext(bundle: NTCCoreResources.bundle)
 let trainPso = ctx.makeComputePipelineState(function: "grid_mlp_train")
-let inferPso = ctx.makeComputePipelineState(function: "grid_mlp_infer")
 let adamPso  = ctx.makeComputePipelineState(function: "adam_step")
 
 @MainActor
@@ -324,10 +105,6 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         }
     }
     
-    let outputBuffer = ctx.device.makeBuffer(length: SRC_H * SRC_W * K_OUT * MemoryLayout<Float>.stride,
-                                             options: .storageModeShared)!
-    outputBuffer.label = "NTC.inferOutput"
-
     let sourceTexDesc = MTLTextureDescriptor()
     sourceTexDesc.textureType     = .type2DArray
     sourceTexDesc.pixelFormat     = .rgba32Float
@@ -450,12 +227,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     }
 
     #if NTC_DEBUG
-    print("pyramid layout: K_GRIDS=\(K_GRIDS)  F_PER_GRID=\(F_PER_GRID)")
-    for i in 0..<K_GRIDS {
-        print(String(format: "  pyramid[%d] %4dx%-4d x %d ch    offset=%-10d  floats=%d",
-                     i, PYRAMID_SIZES[i], PYRAMID_SIZES[i], F_PER_GRID,
-                     PYRAMID_OFFSETS[i], PYRAMID_SLOT_FLOATS[i]))
-    }
+    printPyramidLayout(sizes: PYRAMID_SIZES, offsets: PYRAMID_OFFSETS, slotFloats: PYRAMID_SLOT_FLOATS)
     #endif
 
     let setDesc = MTLResidencySetDescriptor()
@@ -466,7 +238,6 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     residencySet.addAllocation(samplesBuffer)
     residencySet.addAllocation(stepConstsBuffer)
     residencySet.addAllocation(channelImportanceBuffer)
-    residencySet.addAllocation(outputBuffer)
     residencySet.addAllocation(mBuffer)
     residencySet.addAllocation(vBuffer)
     residencySet.addAllocation(adamConstsBuffer)
@@ -491,23 +262,18 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     adamArgTable.setAddress(adamConstsBuffer.gpuAddress, index: 3)
     adamArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 4)
 
-    let inferArgTable = ctx.makeArgumentTable(buffers: 3)
-    inferArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
-    inferArgTable.setAddress(outputBuffer.gpuAddress,     index: 1)
-    inferArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
-
     // https://en.wikipedia.org/wiki/Continuous_uniform_distribution
     // Kaiming He uniform. Float.random() is uniform
-    // target Var(X) = 2/fan_in. Uniform(-a, a) has variance a^2/3
+    // target Var(X) = 2/in_dim. Uniform(-a, a) has variance a^2/3
     // (b - a)^2 / 12 where a and b are interval endpoints. Our a is the half-width:
     // our lower endpoint is -a and upper is +a
     // width = upper - lower = a - (-a) = 2a
     // width^2 = (2a)^2 = 4a^2
     // variance = 4a^2 / 12 = a^2/3
 
-    // a^2/3 = 2 / fan_in -> uniform variance = target variance
-    // a^2 = 6 / fan_in
-    // so a = sqrt(6/fan_in)
+    // a^2/3 = 2 / in_dim -> uniform variance = target variance
+    // a^2 = 6 / in_dim
+    // so a = sqrt(6/in_dim)
     let w1Bound = sqrtf(6.0 / Float(F_IN_RAW))
     let w2Bound = sqrtf(6.0 / Float(K_HIDDEN))
 
@@ -686,139 +452,19 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     print(String(format: "wrote %@  (%d bytes = %.2f MB)",
                  ntcURL.path, ntcBytes, Double(ntcBytes) / (1024 * 1024)))
 
+    // The .ntc is finished above. Everything past here only measures and
+    // pictures it, so a release build stops here.
     #if NTC_DEBUG
-    let ATLAS_W = SRC_W + SRC_W / 2
-    let ATLAS_H = SRC_H
-
-    var atlases: [[Float]] = textureSet.slots.map { s in
-        [Float](repeating: 0, count: ATLAS_W * ATLAS_H * s.channels)
-    }
-    #endif
-
-    let outPtr = outputBuffer.contents().bindMemory(to: Float.self,
-                                                    capacity: SRC_H * SRC_W * K_OUT)
-
-    let pyramidScratch = UnsafeMutablePointer<SIMD4<Float>>.allocate(capacity: SRC_H * SRC_W)
-    defer { pyramidScratch.deallocate() }
-
-    func readPyramidSlice(lod: Int, slice: Int, outWL: Int, outHL: Int) {
-        let region = MTLRegionMake2D(0, 0, outWL, outHL)
-        pyramidBuilder.pyramidTexture.getBytes(pyramidScratch,
-                                               bytesPerRow: outWL * MemoryLayout<SIMD4<Float>>.stride,
-                                               bytesPerImage: outWL * outHL * MemoryLayout<SIMD4<Float>>.stride,
-                                               from: region,
-                                               mipmapLevel: lod,
-                                               slice: slice)
-    }
-
-    func materialMse(_ s: TextureSlot, outWL: Int, outHL: Int) -> Double {
-        var mse: Double = 0
-        let base = s.channelOffset
-        if s.channels == 3 {
-            for i in 0..<(outWL * outHL) {
-                let gt = pyramidScratch[i]
-                let dr = Double(outPtr[i * K_OUT + base + 0] - gt.x)
-                let dg = Double(outPtr[i * K_OUT + base + 1] - gt.y)
-                let db = Double(outPtr[i * K_OUT + base + 2] - gt.z)
-                mse += dr * dr + dg * dg + db * db
-            }
-        } else {
-            for i in 0..<(outWL * outHL) {
-                let gt = pyramidScratch[i]
-                let d = Double(outPtr[i * K_OUT + base] - gt.x)
-                mse += d * d
-            }
-        }
-        return mse / Double(outWL * outHL * s.channels)
-    }
-
-    var psnrTable = [[Double]](repeating: [Double](repeating: 0, count: pyramidBuilder.mipCount),
-                               count: textureSet.slots.count)
-
-    for lod in 0..<pyramidBuilder.mipCount {
-        let outWL = max(SRC_W >> lod, 1)
-        let outHL = max(SRC_H >> lod, 1)
-
-        stepConstsPtr.pointee.inferLod = UInt32(lod)
-
-        let inferCmd = ctx.device.makeCommandBuffer()!
-        inferCmd.beginCommandBuffer(allocator: ctx.allocator)
-
-        let inferEnc = inferCmd.makeComputeCommandEncoder()!
-        inferEnc.setComputePipelineState(inferPso)
-        inferEnc.setArgumentTable(inferArgTable)
-        let tgx = (outWL + 15) / 16
-        let tgy = (outHL + 15) / 16
-        inferEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: tgx, height: tgy, depth: 1),
-                                      threadsPerThreadgroup: MTLSize(width: 16,  height: 16, depth: 1))
-        inferEnc.endEncoding()
-
-        inferCmd.endCommandBuffer()
-        ctx.queue.commit([inferCmd])
-        signalValue += 1
-        ctx.queue.signalEvent(event, value: signalValue)
-        event.wait(untilSignaledValue: signalValue, timeoutMS: 10000)
-
-        // collected here, printed as one semantic-per-row table after the loop
-        for (si, slot) in textureSet.slots.enumerated() {
-            readPyramidSlice(lod: lod, slice: slot.sliceIndex, outWL: outWL, outHL: outHL)
-            let mse = materialMse(slot, outWL: outWL, outHL: outHL)
-            psnrTable[si][lod] = mse > 0 ? 10.0 * log10(1.0 / mse) : Double.infinity
-        }
-
-        #if NTC_DEBUG
-        // mip 0 goes on the left, rest of the mips to the right and down
-        let xOff: Int
-        let yOff: Int
-        if lod == 0 {
-            xOff = 0
-            yOff = 0
-        } else {
-            xOff = SRC_W
-            // cumulative height of mips 1 to lod-1
-            var cum = 0
-            for k in 1..<lod {
-                cum += max(SRC_H >> k, 1)
-            }
-            yOff = cum
-        }
-
-        // copy this mip into every slot's atlas
-        for (si, slot) in textureSet.slots.enumerated() {
-            for y in 0..<outHL {
-                for x in 0..<outWL {
-                    let srcIdx = (y * outWL + x) * K_OUT + slot.channelOffset
-                    let dstIdx = ((yOff + y) * ATLAS_W + (xOff + x)) * slot.channels
-                    for c in 0..<slot.channels {
-                        atlases[si][dstIdx + c] = outPtr[srcIdx + c]
-                    }
-                }
-            }
-        }
-        #endif
-    }
-
-    #if NTC_DEBUG
-    print("\nPSNR (dB) for \(textureSet.name), \(SRC_W)x\(SRC_H)")
-    var header = String(repeating: " ", count: 14)
-    for lod in 0..<pyramidBuilder.mipCount { header += String(format: "%7d", max(SRC_W >> lod, 1)) }
-    print(header)
-    for (si, slot) in textureSet.slots.enumerated() {
-        var line = slot.semantic.padding(toLength: 14, withPad: " ", startingAt: 0)
-        for psnr in psnrTable[si] { line += String(format: "%7.2f", psnr) }
-        print(line)
-    }
-    print("")
-    
-    let outDir = textureSet.manifestDir.appendingPathComponent("output")
-    try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-    for (si, slot) in textureSet.slots.enumerated() {
-        let img = LoadedImage(pixels: atlases[si],
-                              height: ATLAS_H,
-                              width:  ATLAS_W,
-                              channels: slot.channels)
-        try save_image(img, to: outDir.appendingPathComponent("grid_mlp_\(textureSet.name)_\(slot.semantic.lowercased())_lod_atlas.png"))
-    }
+    try reportQuality(ctx:              ctx,
+                      textureSet:       textureSet,
+                      pyramidBuilder:   pyramidBuilder,
+                      paramsBuffer:     paramsBuffer,
+                      stepConstsBuffer: stepConstsBuffer,
+                      srcW:             SRC_W,
+                      srcH:             SRC_H,
+                      kOut:             K_OUT,
+                      event:            event,
+                      signalValue:      &signalValue)
     #endif
 }
 
