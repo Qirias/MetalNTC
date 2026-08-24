@@ -36,15 +36,6 @@ enum ManifestGen {
         let images:    [Image]?
     }
 
-    enum Err: Error, CustomStringConvertible {
-        case msg(String)
-        var description: String {
-            switch self {
-                case .msg(let m): return m
-            }
-        }
-    }
-
     /// Reads every material in the glTF, writes ONE `manifest.json` beside the
     /// .gltf (a list of models, one per material), and returns the decoded
     /// Manifest. One .ntc is trained per model.
@@ -54,18 +45,20 @@ enum ManifestGen {
         let doc  = try JSONDecoder().decode(GLTFDoc.self, from: data)
 
         guard let materials = doc.materials, !materials.isEmpty else {
-            throw Err.msg("glTF \(gltfURL.lastPathComponent) declares no materials")
+            throw TrainerError.msg("glTF \(gltfURL.lastPathComponent) declares no materials")
         }
 
         let textures = doc.textures ?? []
         let images   = doc.images   ?? []
 
-        // texture index -> image file name, or nil if the ref/source is missing.
+        // texture index -> image file name; nil means the material does not
+        // declare this texture at all; an out-of-range index is a corrupt glTF
+        // and traps rather than silently dropping the texture
         func fileName(_ ref: GLTFDoc.TexRef?) -> String? {
-            guard let ref, ref.index >= 0, ref.index < textures.count else { return nil }
-            let src = textures[ref.index].source
-            guard src >= 0, src < images.count else { return nil }
-            let uri = images[src].uri
+            guard let ref else {
+                return nil
+            }
+            let uri = images[textures[ref.index].source].uri
             return uri.removingPercentEncoding ?? uri
         }
 
@@ -73,8 +66,12 @@ enum ManifestGen {
         for (i, material) in materials.enumerated() {
             var entries: [Manifest.Entry] = []
             func add(_ ref: GLTFDoc.TexRef?, _ semantics: [String: String], srgb: Bool) {
-                guard let f = fileName(ref) else { return }
-                entries.append(.init(fileName: f, isSRGB: srgb ? true : nil, semantics: semantics))
+                guard let file = fileName(ref) else {
+                    return
+                }
+                entries.append(Manifest.Entry(fileName: file,
+                                              isSRGB:   srgb ? true : nil,
+                                              semantics: semantics))
             }
 
             add(material.pbrMetallicRoughness?.baseColorTexture,         ["Albedo": "RGB"],                    srgb: true)
@@ -88,11 +85,12 @@ enum ManifestGen {
                     "warning: material \(i) (\(material.name ?? "unnamed")) has no usable textures; skipped\n".utf8))
                 continue
             }
-            models.append(.init(name: safeName(material.name, index: i), textures: entries))
+            models.append(Manifest.Model(name: safeName(material.name, index: i),
+                                         textures: entries))
         }
 
         guard !models.isEmpty else {
-            throw Err.msg("glTF \(gltfURL.lastPathComponent) has no material with usable textures")
+            throw TrainerError.msg("glTF \(gltfURL.lastPathComponent) has no material with usable textures")
         }
 
         let manifest = Manifest(models: models)
@@ -107,9 +105,16 @@ enum ManifestGen {
 
     /// Make a material name safe to use as a filename; fall back to material_<i>.
     private static func safeName(_ raw: String?, index: Int) -> String {
-        guard let raw, !raw.isEmpty else { return "material_\(index)" }
+        guard let raw, !raw.isEmpty else {
+            return "material_\(index)"
+        }
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
-        let cleaned = String(raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
-        return cleaned.isEmpty ? "material_\(index)" : cleaned
+        let cleaned = String(raw.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "_"
+        })
+        if cleaned.isEmpty {
+            return "material_\(index)"
+        }
+        return cleaned
     }
 }

@@ -134,21 +134,21 @@ inline void mlp_forward(device const float* params,
                         uint off_w1, uint off_b1,
                         uint off_w2, uint off_b2,
                         uint off_w3, uint off_b3,
-                        uint fan_in, uint hidden, uint out_dim,
+                        uint in_dim, uint hidden, uint out_dim,
                         thread const float* features,
                         thread half* pre1, thread half* hid1,
                         thread half* pre2, thread half* hid2,
                         thread half* pred) {
     half feat_h[F_IN];
-    for (uint i = 0; i < fan_in; i++) {
+    for (uint i = 0; i < in_dim; i++) {
         feat_h[i] = half(features[i]);
     }
 
     // Linear1 + hardGELU
     for (uint h = 0; h < hidden; h++) {
         half acc = half(params[off_b1 + h]);
-        for (uint i = 0; i < fan_in; i++) {
-            acc += half(params[off_w1 + h * fan_in + i]) * feat_h[i];
+        for (uint i = 0; i < in_dim; i++) {
+            acc += half(params[off_w1 + h * in_dim + i]) * feat_h[i];
         }
         pre1[h] = acc;
         hid1[h] = hard_gelu(acc);
@@ -196,14 +196,14 @@ inline void mlp_forward_h(device const half* mlp,
                           uint off_w1, uint off_b1,
                           uint off_w2, uint off_b2,
                           uint off_w3, uint off_b3,
-                          uint fan_in, uint hidden, uint out_dim,
+                          uint in_dim, uint hidden, uint out_dim,
                           thread const half* features,
                           thread half* hid1, thread half* hid2,
                           thread half* pred) {
     
     // pack the padded input vector into aligned half4 groups
     half4 input4[F_IN / 4];
-    for (uint group = 0; group < fan_in / 4; group++) {
+    for (uint group = 0; group < in_dim / 4; group++) {
         uint base = group * 4;
         input4[group] = half4(features[base + 0], features[base + 1],
                               features[base + 2], features[base + 3]);
@@ -212,9 +212,9 @@ inline void mlp_forward_h(device const half* mlp,
     // Linear1 + hardGELU
     // one output row at a time
     for (uint outNeuron = 0; outNeuron < hidden; outNeuron++) {
-        device const half4* weightRow = (device const half4*)(mlp + off_w1 + outNeuron * fan_in);
+        device const half4* weightRow = (device const half4*)(mlp + off_w1 + outNeuron * in_dim);
         half4 rowAcc4 = half4(0.0h);
-        for (uint group = 0; group < fan_in / 4; group++) {
+        for (uint group = 0; group < in_dim / 4; group++) {
             rowAcc4 += weightRow[group] * input4[group];
         }
         half rowSum = mlp[off_b1 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;

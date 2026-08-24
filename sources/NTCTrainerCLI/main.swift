@@ -6,21 +6,34 @@ import Foundation
 import QuartzCore
 import AppKit
 
+enum TrainerError: Error, CustomStringConvertible {
+    case msg(String)
 
-// set INPUT_OVERRIDE to skip the picker
-//   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCRenderer/assets/models/flighthelmet/scene.gltf"
+    var description: String {
+        switch self {
+            case .msg(let text):
+                return text
+        }
+    }
+}
+
+// MARK: Input selection
+
+// σet INPUT_OVERRIDE to compress a fixed path and skip the open panel
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
+//   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCRenderer/assets/models/flighthelmet/scene.gltf"
 let INPUT_OVERRIDE: String? = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover008_2K-PNG"
 
 let DEFAULT_BROWSE_DIR = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()   // sources/NTCTrainerCLI
     .deletingLastPathComponent()   // sources
-    .appendingPathComponent("NTCRenderer/assets/models").path
+    .appendingPathComponent("NTCRenderer/assets/models")
 
 @MainActor
-func pickInput() -> URL? {
+func pickInput() -> URL {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
+
     let panel = NSOpenPanel()
     panel.title                   = "Select a model to compress"
     panel.message                 = "Choose a .gltf, a manifest.json, or a texture directory"
@@ -28,97 +41,76 @@ func pickInput() -> URL? {
     panel.canChooseFiles          = true
     panel.canChooseDirectories    = true
     panel.allowsMultipleSelection = false
-    if FileManager.default.fileExists(atPath: DEFAULT_BROWSE_DIR) {
-        panel.directoryURL = URL(fileURLWithPath: DEFAULT_BROWSE_DIR)
+    if FileManager.default.fileExists(atPath: DEFAULT_BROWSE_DIR.path) {
+        panel.directoryURL = DEFAULT_BROWSE_DIR
     }
+
     app.activate(ignoringOtherApps: true)
-    return panel.runModal() == .OK ? panel.url : nil
+    guard panel.runModal() == .OK, let url = panel.url else {
+        print("cancelled")
+        exit(0)
+    }
+    return url
 }
 
 @MainActor
-func resolveInput() throws -> URL {
-    let args = CommandLine.arguments
-    if args.count > 1 { return URL(fileURLWithPath: args[1]) }
-    if let ovr = INPUT_OVERRIDE, !ovr.isEmpty { return URL(fileURLWithPath: ovr) }
-    if let picked = pickInput() { return picked }
-    throw TrainerError.msg("no input: pass a path as an argument, set INPUT_OVERRIDE, or pick one in the panel")
-}
-
-// set QUALITY_OVERRIDE to skip the quality dialog
-let QUALITY_OVERRIDE: Quality? = nil
-
-@MainActor
-func pickQuality() -> Quality? {
+func pickQuality() -> Quality {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
-    let alert = NSAlert()
-    alert.messageText = "Compression quality"
+
     let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 25))
     popup.addItems(withTitles: Quality.allCases.map(\.rawValue))
-    popup.selectItem(at: Quality.allCases.firstIndex(of: .high) ?? 0)
+    popup.selectItem(at: Quality.allCases.firstIndex(of: .high)!)
+
+    let alert = NSAlert()
+    alert.messageText   = "Compression quality"
     alert.accessoryView = popup
     alert.addButton(withTitle: "Compress")
     alert.addButton(withTitle: "Cancel")
+
     app.activate(ignoringOtherApps: true)
-    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    guard alert.runModal() == .alertFirstButtonReturn else {
+        print("cancelled")
+        exit(0)
+    }
     return Quality.allCases[popup.indexOfSelectedItem]
 }
 
-@MainActor
-func resolveQuality() throws -> Quality {
-    let args = CommandLine.arguments
-    if args.count > 2 {
-        guard let quality = Quality(rawValue: args[2]) else {
-            throw TrainerError.msg("unknown quality '\(args[2])'; expected one of "
-                                   + Quality.allCases.map(\.rawValue).joined(separator: ", "))
-        }
-        return quality
-    }
-    if let ovr = QUALITY_OVERRIDE { return ovr }
-    if let picked = pickQuality() { return picked }
-    throw TrainerError.msg("no quality selected")
+let inputURL: URL
+if let path = INPUT_OVERRIDE, !path.isEmpty {
+    inputURL = URL(fileURLWithPath: path)
+} else {
+    inputURL = pickInput()
 }
 
-let inputURL = try resolveInput()
-let QUALITY  = try resolveQuality()
+let QUALITY = pickQuality()
 
-func discoverGLTFs(_ url: URL) -> [URL] {
-    var isDir: ObjCBool = false
-    FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-    if !isDir.boolValue { return [url] }
-    var out: [URL] = []
-    if let en = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil) {
-        for case let f as URL in en where f.pathExtension.lowercased() == "gltf" {
-            out.append(f)
+func loadManifest(at url: URL) throws -> (manifest: Manifest, dir: URL) {
+    var isDirectory: ObjCBool = false
+    FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+
+    if !isDirectory.boolValue {
+        switch url.pathExtension.lowercased() {
+            case "gltf":
+                return (try ManifestGen.generate(fromGLTF: url), url.deletingLastPathComponent())
+            case "json":
+                return (try Manifest.load(from: url), url.deletingLastPathComponent())
+            default:
+                throw TrainerError.msg("\(url.lastPathComponent) is neither a .gltf nor a manifest.json")
         }
     }
-    return out.sorted { $0.path < $1.path }
-}
 
-enum TrainerError: Error, CustomStringConvertible {
-    case msg(String)
-    var description: String { switch self { case .msg(let m): return m } }
-}
+    let manifestURL = url.appendingPathComponent("manifest.json")
+    if FileManager.default.fileExists(atPath: manifestURL.path) {
+        return (try Manifest.load(from: manifestURL), url)
+    }
 
-/// Resolve the input to (manifest, directory) pairs. A .gltf generates its
-/// manifest; a manifest.json loads directly (new `{models}` or old flat
-/// `{textures}` format); a directory with a manifest.json loads it as a texture
-/// set, otherwise it is scanned for .gltf files.
-func loadManifests(_ url: URL) throws -> [(manifest: Manifest, dir: URL)] {
-    var isDir: ObjCBool = false
-    FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-    if isDir.boolValue {
-        let manifestURL = url.appendingPathComponent("manifest.json")
-        if FileManager.default.fileExists(atPath: manifestURL.path) {
-            return [(try Manifest.load(from: manifestURL), url)]
-        }
-        return try discoverGLTFs(url).map { (try ManifestGen.generate(fromGLTF: $0), $0.deletingLastPathComponent()) }
+    let entries = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+    let gltfs   = entries.filter { $0.pathExtension.lowercased() == "gltf" }
+    guard let gltfURL = gltfs.sorted(by: { $0.path < $1.path }).first else {
+        throw TrainerError.msg("\(url.lastPathComponent) holds neither a manifest.json nor a .gltf")
     }
-    switch url.pathExtension.lowercased() {
-        case "gltf": return [(try ManifestGen.generate(fromGLTF: url), url.deletingLastPathComponent())]
-        case "json": return [(try Manifest.load(from: url),           url.deletingLastPathComponent())]
-        default:     throw TrainerError.msg("unsupported input \(url.lastPathComponent); expected .gltf, manifest.json, or a directory")
-    }
+    return (try ManifestGen.generate(fromGLTF: gltfURL), url)
 }
 
 struct PyramidPreset {
@@ -133,13 +125,18 @@ let MIP_MAPS: [Int: [UInt32]] = [
 ]
 
 func pyramidPreset(srcW: Int, quality: Quality) -> PyramidPreset? {
-    guard let mipMap = MIP_MAPS[srcW] else { return nil }
-    let base = srcW / quality.gridScale
-    return PyramidPreset(sizes:  (0..<K_GRIDS).map { max(base >> $0, 1) },
-                         mipMap: mipMap)
+    guard let mipMap = MIP_MAPS[srcW] else {
+        return nil
+    }
+    let base  = srcW / quality.gridScale
+    let sizes = (0..<K_GRIDS).map { grid in
+        max(base >> grid, 1)
+    }
+    return PyramidPreset(sizes: sizes, mipMap: mipMap)
 }
 
 let K_BATCH = 4096
+
 let BITS: UInt32 = 4
 
 let IMPORTANCE_WEIGHTS: [String: Float] = [
@@ -153,9 +150,6 @@ let IMPORTANCE_WEIGHTS: [String: Float] = [
 ]
 
 func fake_quant(bits: UInt32) -> (q: Float, lo: Float, hi: Float) {
-    if bits == 0 {
-        return (0, 0, 0)
-    }
     let N = Float(1 << bits)
     let q = 1.0 / N
     let lo = -(N - 1) / 2 * q
@@ -198,9 +192,9 @@ func sampleBatchLod(lodMax: Int) -> Int {
 }
 
 struct AdamConstants {
-    var lrGrid: Float;
-    var lrMlp:  Float;
-    var bc1:    Float;
+    var lrGrid: Float
+    var lrMlp:  Float
+    var bc1:    Float
     var bc2:    Float
 }
 
@@ -246,10 +240,10 @@ struct StepConstants {
     var posScale:            Float
 }
 
-let ctx = try MetalContext(bundle: NTCCoreResources.bundle)
-let trainPso = try ctx.makeComputePipelineState(function: "grid_mlp_train")
-let inferPso = try ctx.makeComputePipelineState(function: "grid_mlp_infer")
-let adamPso   = try ctx.makeComputePipelineState(function: "adam_step")
+let ctx      = MetalContext(bundle: NTCCoreResources.bundle)
+let trainPso = ctx.makeComputePipelineState(function: "grid_mlp_train")
+let inferPso = ctx.makeComputePipelineState(function: "grid_mlp_infer")
+let adamPso  = ctx.makeComputePipelineState(function: "adam_step")
 
 @MainActor
 func trainModel(_ model: Manifest.Model, dir: URL) throws {
@@ -258,7 +252,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     let materialImages: [LoadedImage]
     let SRC_W: Int
     let SRC_H: Int
-    (materialImages, SRC_W, SRC_H) = try textureSet.loadImages() 
+    (materialImages, SRC_W, SRC_H) = try textureSet.loadImages()
 
     guard let PRESET = pyramidPreset(srcW: SRC_W, quality: QUALITY) else {
         throw TrainerError.msg("no mip map for \(SRC_W)x\(SRC_H); add one to MIP_MAPS")
@@ -382,7 +376,7 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         uploadSlice(img, into: sourceTexture, slice: slot.sliceIndex)
     }
 
-    let pyramidBuilder = try MipPyramidBuilder(ctx: ctx, srcW: SRC_W, srcH: SRC_H, sourceTexture: sourceTexture)
+    let pyramidBuilder = MipPyramidBuilder(ctx: ctx, srcW: SRC_W, srcH: SRC_H, sourceTexture: sourceTexture)
 
     let mBuffer = ctx.device.makeBuffer(length: TOTAL * MemoryLayout<Float>.stride,
                                         options: .storageModeShared)!
@@ -483,28 +477,21 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     ctx.queue.addResidencySet(residencySet)
     defer { ctx.queue.removeResidencySet(residencySet) }
 
-    let trainArgDesc = MTL4ArgumentTableDescriptor()
-    trainArgDesc.maxBufferBindCount  = 4
-    trainArgDesc.maxTextureBindCount = 1
-    let trainArgTable = try ctx.device.makeArgumentTable(descriptor: trainArgDesc)
-    trainArgTable.setAddress(paramsBuffer.gpuAddress,           index: 0)
-    trainArgTable.setAddress(samplesBuffer.gpuAddress,          index: 1)
-    trainArgTable.setAddress(stepConstsBuffer.gpuAddress,       index: 2)
-    trainArgTable.setAddress(channelImportanceBuffer.gpuAddress,    index: 3)
+    let trainArgTable = ctx.makeArgumentTable(buffers: 4, textures: 1)
+    trainArgTable.setAddress(paramsBuffer.gpuAddress,            index: 0)
+    trainArgTable.setAddress(samplesBuffer.gpuAddress,           index: 1)
+    trainArgTable.setAddress(stepConstsBuffer.gpuAddress,        index: 2)
+    trainArgTable.setAddress(channelImportanceBuffer.gpuAddress, index: 3)
     trainArgTable.setTexture(pyramidBuilder.pyramidTexture.gpuResourceID, index: 0)
 
-    let adamArgDesc = MTL4ArgumentTableDescriptor()
-    adamArgDesc.maxBufferBindCount = 5
-    let adamArgTable = try ctx.device.makeArgumentTable(descriptor: adamArgDesc)
+    let adamArgTable = ctx.makeArgumentTable(buffers: 5)
     adamArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
     adamArgTable.setAddress(mBuffer.gpuAddress,          index: 1)
     adamArgTable.setAddress(vBuffer.gpuAddress,          index: 2)
     adamArgTable.setAddress(adamConstsBuffer.gpuAddress, index: 3)
     adamArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 4)
 
-    let inferArgDesc = MTL4ArgumentTableDescriptor()
-    inferArgDesc.maxBufferBindCount = 3
-    let inferArgTable = try ctx.device.makeArgumentTable(descriptor: inferArgDesc)
+    let inferArgTable = ctx.makeArgumentTable(buffers: 3)
     inferArgTable.setAddress(paramsBuffer.gpuAddress,     index: 0)
     inferArgTable.setAddress(outputBuffer.gpuAddress,     index: 1)
     inferArgTable.setAddress(stepConstsBuffer.gpuAddress, index: 2)
@@ -540,6 +527,56 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     let event = ctx.device.makeSharedEvent()!
     var signalValue: UInt64 = 0
 
+    func fillBatch(lod: Int) {
+        let wL = SRC_W >> lod
+        let hL = SRC_H >> lod
+        for s in 0..<K_BATCH {
+            let base = s * SAMPLE_STRIDE
+            samplesFloats[base + SAMPLE_X]   = Float(Int.random(in: 0..<wL))
+            samplesFloats[base + SAMPLE_Y]   = Float(Int.random(in: 0..<hL))
+            samplesFloats[base + SAMPLE_LOD] = Float(lod)
+        }
+    }
+
+    func encodeStep(adamSlots: Int) {
+        let tgSize = 256
+
+        let cmd = ctx.device.makeCommandBuffer()!
+        cmd.beginCommandBuffer(allocator: ctx.allocator)
+
+        let trainEnc = cmd.makeComputeCommandEncoder()!
+        trainEnc.setComputePipelineState(trainPso)
+        trainEnc.setArgumentTable(trainArgTable)
+        let trainTgx = (K_BATCH + tgSize - 1) / tgSize
+        trainEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: trainTgx, height: 1, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: tgSize,   height: 1, depth: 1))
+        trainEnc.endEncoding()
+
+        let adamEnc = cmd.makeComputeCommandEncoder()!
+        adamEnc.setComputePipelineState(adamPso)
+        adamEnc.setArgumentTable(adamArgTable)
+        let adamTgx = (adamSlots + tgSize - 1) / tgSize
+        adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: adamTgx, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize,  height: 1, depth: 1))
+        adamEnc.endEncoding()
+
+        cmd.endCommandBuffer()
+        ctx.queue.commit([cmd])
+        signalValue += 1
+        ctx.queue.signalEvent(event, value: signalValue)
+    }
+
+    #if NTC_DEBUG
+    func logMeanLoss(_ label: String, step: Int) {
+        event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
+        var sumLoss: Float = 0
+        for s in 0..<K_BATCH {
+            sumLoss += samplesFloats[s * SAMPLE_STRIDE + SAMPLE_LOSS]
+        }
+        print("\(label) step \(step)\tmean loss = \(sumLoss / Float(K_BATCH))")
+    }
+    #endif
+
     let pyramidCmd = ctx.device.makeCommandBuffer()!
     pyramidCmd.beginCommandBuffer(allocator: ctx.allocator)
     pyramidBuilder.encode(into: pyramidCmd)
@@ -556,56 +593,20 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     for step in 0..<nSteps {
         event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
-        let batchLod = sampleBatchLod(lodMax: lodMax)
-        let wL = SRC_W >> batchLod
-        let hL = SRC_H >> batchLod
-        for s in 0..<K_BATCH {
-            let base = s * SAMPLE_STRIDE
-            samplesFloats[base + SAMPLE_X]   = Float(Int.random(in: 0..<wL))
-            samplesFloats[base + SAMPLE_Y]   = Float(Int.random(in: 0..<hL))
-            samplesFloats[base + SAMPLE_LOD] = Float(batchLod)
-        }
+        fillBatch(lod: sampleBatchLod(lodMax: lodMax))
 
         t += 1
-        let bc1 = 1.0 - powf(BETA1, Float(t))
-        let bc2 = 1.0 - powf(BETA2, Float(t))
+        let bc1    = 1.0 - powf(BETA1, Float(t))
+        let bc2    = 1.0 - powf(BETA2, Float(t))
         let lrGrid = cosineLr(step: step, total: nSteps, lrMax: LR_GRID_MAX)
         let lrMlp  = cosineLr(step: step, total: nSteps, lrMax: LR_MLP_MAX)
         adamConstsPtr.pointee = AdamConstants(lrGrid: lrGrid, lrMlp: lrMlp, bc1: bc1, bc2: bc2)
 
-        let cmd = ctx.device.makeCommandBuffer()!
-        cmd.beginCommandBuffer(allocator: ctx.allocator)
-
-        let trainEnc = cmd.makeComputeCommandEncoder()!
-        trainEnc.setComputePipelineState(trainPso)
-        trainEnc.setArgumentTable(trainArgTable)
-        let tgSize = 256
-        let trainTgx = (K_BATCH + tgSize - 1) / tgSize
-        trainEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: trainTgx,   height: 1, depth: 1),
-                                      threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        trainEnc.endEncoding()
-
-        let adamEnc = cmd.makeComputeCommandEncoder()!
-        adamEnc.setComputePipelineState(adamPso)
-        adamEnc.setArgumentTable(adamArgTable)
-        let adamTgx = (TOTAL + tgSize - 1) / tgSize
-        adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: adamTgx,   height: 1, depth: 1),
-                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        adamEnc.endEncoding()
-
-        cmd.endCommandBuffer()
-        ctx.queue.commit([cmd])
-        signalValue += 1
-        ctx.queue.signalEvent(event, value: signalValue)
+        encodeStep(adamSlots: TOTAL)
 
         #if NTC_DEBUG
         if step % logEvery == 0 {
-            event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
-            var sumLoss: Float = 0
-            for s in 0..<K_BATCH {
-                sumLoss += samplesFloats[s * SAMPLE_STRIDE + SAMPLE_LOSS]
-            }
-            print("step \(step)\tmean loss = \(sumLoss / Float(K_BATCH))")
+            logMeanLoss("train", step: step)
         }
         #endif
     }
@@ -620,36 +621,26 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     // MLP fine-tunes against the values the decoder will actually see at
     // inference. Grid stays frozen for the rest of this run.
     var gridBytes = [UInt8](repeating: 0, count: OFFSET_MLP)
-    if QUANT.q > 0 {
-        let invQ   = 1.0 / QUANT.q
-        let offset = 1 << (Int(BITS) - 1)   // offset-binary center: 8 for 4-bit, 128 for 8-bit
-        let maxc   = (1 << Int(BITS)) - 1   // 15 for 4-bit, 255 for 8-bit
-        for j in 0..<OFFSET_MLP {
-            let coded   = Int((paramsFloats[j] * invQ).rounded()) + offset
-            let clamped = max(0, min(maxc, coded))
-            gridBytes[j]    = UInt8(clamped)
-            paramsFloats[j] = Float(clamped - offset) * QUANT.q
-        }
+    let invQ   = 1.0 / QUANT.q
+    let offset = 1 << (Int(BITS) - 1)   // offset-binary center, 8 at 4 bits
+    let maxc   = (1 << Int(BITS)) - 1   // largest code, 15 at 4 bits
+    for j in 0..<OFFSET_MLP {
+        let coded   = Int((paramsFloats[j] * invQ).rounded()) + offset
+        let clamped = max(0, min(maxc, coded))
+        gridBytes[j]    = UInt8(clamped)
+        paramsFloats[j] = Float(clamped - offset) * QUANT.q
     }
 
     stepConstsPtr.pointee.adamOffset = UInt32(OFFSET_MLP)
     stepConstsPtr.pointee.q = 0
 
-    let nFineTune = BITS != 0 ? nSteps / 20 : 0 // 5% fine tuning as in the nvidia paper
+    let nFineTune = nSteps / 20   // 5% fine tuning as in the nvidia paper
     let mlpSlots = TOTAL - OFFSET_MLP
 
     for step in 0..<nFineTune {
         event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
 
-        let batchLod = sampleBatchLod(lodMax: lodMax)
-        let wL = SRC_W >> batchLod
-        let hL = SRC_H >> batchLod
-        for s in 0..<K_BATCH {
-            let base = s * SAMPLE_STRIDE
-            samplesFloats[base + SAMPLE_X]   = Float(Int.random(in: 0..<wL))
-            samplesFloats[base + SAMPLE_Y]   = Float(Int.random(in: 0..<hL))
-            samplesFloats[base + SAMPLE_LOD] = Float(batchLod)
-        }
+        fillBatch(lod: sampleBatchLod(lodMax: lodMax))
 
         t += 1
         let bc1 = 1.0 - powf(BETA1, Float(t))
@@ -658,39 +649,11 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
         let lrMlp = cosineLr(step: step, total: nFineTune, lrMax: LR_MLP_MAX)
         adamConstsPtr.pointee = AdamConstants(lrGrid: 0, lrMlp: lrMlp, bc1: bc1, bc2: bc2)
 
-        let cmd = ctx.device.makeCommandBuffer()!
-        cmd.beginCommandBuffer(allocator: ctx.allocator)
-
-        let trainEnc = cmd.makeComputeCommandEncoder()!
-        trainEnc.setComputePipelineState(trainPso)
-        trainEnc.setArgumentTable(trainArgTable)
-        let tgSize = 256
-        let trainTgx = (K_BATCH + tgSize - 1) / tgSize
-        trainEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: trainTgx, height: 1, depth: 1),
-                                      threadsPerThreadgroup: MTLSize(width: tgSize,   height: 1, depth: 1))
-        trainEnc.endEncoding()
-
-        let adamEnc = cmd.makeComputeCommandEncoder()!
-        adamEnc.setComputePipelineState(adamPso)
-        adamEnc.setArgumentTable(adamArgTable)
-        let adamTgx = (mlpSlots + tgSize - 1) / tgSize
-        adamEnc.dispatchThreadgroups(threadgroupsPerGrid:   MTLSize(width: adamTgx, height: 1, depth: 1),
-                                     threadsPerThreadgroup: MTLSize(width: tgSize,  height: 1, depth: 1))
-        adamEnc.endEncoding()
-
-        cmd.endCommandBuffer()
-        ctx.queue.commit([cmd])
-        signalValue += 1
-        ctx.queue.signalEvent(event, value: signalValue)
+        encodeStep(adamSlots: mlpSlots)
 
         #if NTC_DEBUG
         if step % logEvery == 0 {
-            event.wait(untilSignaledValue: signalValue, timeoutMS: 1000)
-            var sumLoss: Float = 0
-            for s in 0..<K_BATCH {
-                sumLoss += samplesFloats[s * SAMPLE_STRIDE + SAMPLE_LOSS]
-            }
-            print("fine-tune step \(step)\tmean loss = \(sumLoss / Float(K_BATCH))")
+            logMeanLoss("fine-tune", step: step)
         }
         #endif
     }
@@ -718,11 +681,10 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
                           gridBytes: gridBytes,
                           mlpFloats:  paramsFloats.advanced(by: OFFSET_MLP))
 
-    let ntcURL = textureSet.manifestDir.appendingPathComponent(QUALITY.ntcFileName(base: textureSet.name))
-    try writeNTC(ntcFile, to: ntcURL)
-
-    let ntcBytes = (try? FileManager.default.attributesOfItem(atPath: ntcURL.path))?[.size] as? Int ?? 0
-    print(String(format: "wrote %@  (%d bytes = %.2f MB)", ntcURL.path, ntcBytes, Double(ntcBytes) / (1024 * 1024)))
+    let ntcURL   = textureSet.manifestDir.appendingPathComponent(QUALITY.ntcFileName(base: textureSet.name))
+    let ntcBytes = try writeNTC(ntcFile, to: ntcURL)
+    print(String(format: "wrote %@  (%d bytes = %.2f MB)",
+                 ntcURL.path, ntcBytes, Double(ntcBytes) / (1024 * 1024)))
 
     #if NTC_DEBUG
     let ATLAS_W = SRC_W + SRC_W / 2
@@ -860,25 +822,24 @@ func trainModel(_ model: Manifest.Model, dir: URL) throws {
     #endif
 }
 
-let sources = try loadManifests(inputURL)
-guard !sources.isEmpty else{
-    fatalError("no trainable input at \(inputURL.path)")
-}
+let (manifest, dir) = try loadManifest(at: inputURL)
+print("== \(dir.lastPathComponent): \(manifest.models.count) model(s) ==")
 
 var failures: [String] = []
-for (manifest, dir) in sources {
-    print("== \(dir.lastPathComponent): \(manifest.models.count) model(s) ==")
-    for (i, model) in manifest.models.enumerated() {
-        print("-- [\(i + 1)/\(manifest.models.count)] training \(model.name) (\(model.textures.count) textures) --")
-        // one model failing must not lose the models already written or the ones still to run
-        do {
-            try trainModel(model, dir: dir)
-        } catch {
-            FileHandle.standardError.write(Data("SKIP model \(model.name): \(error)\n".utf8))
-            failures.append("\(model.name)")
-        }
+for (i, model) in manifest.models.enumerated() {
+    print("-- [\(i + 1)/\(manifest.models.count)] training \(model.name) (\(model.textures.count) textures) --")
+    // one model failing must not cost the models already written or the ones
+    // still to run; so the batch keeps going and reports what it skipped
+    do {
+        try trainModel(model, dir: dir)
+    } catch {
+        FileHandle.standardError.write(Data("SKIP model \(model.name): \(error)\n".utf8))
+        failures.append(model.name)
     }
 }
-if !failures.isEmpty {
+
+if failures.isEmpty {
+    print("done")
+} else {
     print("done with \(failures.count) skipped: \(failures.joined(separator: ", "))")
 }

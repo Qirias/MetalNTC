@@ -25,8 +25,8 @@ public struct NTCFile {
     public var pyramidSizes:     [UInt32]
     public var neuralMipsForLod: [UInt32]
     public var slots:            [NTCSlotInfo]
-    public var grid:         [UInt8]    // offset-binary uint8
-    public var mlp:          [UInt16]   // raw binary16 bits
+    public var grid:             [UInt8]    // offset-binary codes, one per byte
+    public var mlp:              [UInt16]   // raw binary16 bits
 
     public var gridTexels: Int { pyramidSizes.reduce(0) { $0 + Int($1) * Int($1) } }
 
@@ -46,7 +46,7 @@ public enum NTCFileError: Error {
     case badVersion(UInt32)
     case truncated
     case unsupportedMlpDType(UInt32)
-    case sizeMismatch(String)
+    case unsupportedQuantBits(UInt32)
 }
 
 // MARK: Packing
@@ -111,7 +111,9 @@ public func packNTC(srcW: Int, srcH: Int, mipCount: Int,
 
 // MARK: Write
 
-public func writeNTC(_ file: NTCFile, to url: URL) throws {
+/// writes the file and returns how many bytes
+@discardableResult
+public func writeNTC(_ file: NTCFile, to url: URL) throws -> Int {
     var data = Data()
 
     // header
@@ -141,14 +143,14 @@ public func writeNTC(_ file: NTCFile, to url: URL) throws {
         }
     }
 
-    // grid: packed for 4bit (2 ints/byte). The 8bit
-    // stays one int per byte. In-memory `grid` is always one int per byte.
-    data.append(contentsOf: packGrid(file.grid, bits: Int(file.header.quantBits)))
+    // grid: two 4-bit codes per byte. In-memory `grid` is one code per byte
+    data.append(contentsOf: packGrid(file.grid))
 
     // mlp
     appendArray(file.mlp, to: &data)
 
     try data.write(to: url, options: .atomic)
+    return data.count
 }
 
 // MARK: Read
@@ -161,10 +163,18 @@ public func readNTC(from url: URL) throws -> NTCFile {
 public func readNTC(from data: Data) throws -> NTCFile {
     var cur = 0
     let header: NTCHeader = try readValue(from: data, at: &cur)
-    guard header.signature == NTC_SIGNATURE else { throw NTCFileError.badSignature(header.signature) }
-    guard header.version   == NTC_VERSION   else { throw NTCFileError.badVersion(header.version) }
+    guard header.signature == NTC_SIGNATURE else {
+        throw NTCFileError.badSignature(header.signature)
+    }
+    guard header.version == NTC_VERSION else {
+        throw NTCFileError.badVersion(header.version)
+    }
     guard header.mlpDType == NTC_MLP_DTYPE_FP16 else {
         throw NTCFileError.unsupportedMlpDType(header.mlpDType)
+    }
+    
+    guard header.quantBits == 4 else {
+        throw NTCFileError.unsupportedQuantBits(header.quantBits)
     }
 
     let pyramidSizes = try readArray(from: data, at: &cur,
@@ -186,12 +196,12 @@ public func readNTC(from data: Data) throws -> NTCFile {
         ))
     }
 
-    let texels = pyramidSizes.reduce(0) { $0 + Int($1) * Int($1) }
-    let gridCount = texels * Int(header.fPerGrid) // number of ints
-    let bits = Int(header.quantBits)
-    let diskBytes = bits == 4 ? (gridCount + 1) / 2 : gridCount
+    let texels    = pyramidSizes.reduce(0) { $0 + Int($1) * Int($1) }
+    let gridCount = texels * Int(header.fPerGrid)   // number of codes
+    let diskBytes = (gridCount + 1) / 2             // two codes per byte
+
     let packed = try readArray(from: data, at: &cur, count: diskBytes, as: UInt8.self)
-    let grid = unpackGrid(packed, count: gridCount, bits: bits)
+    let grid   = unpackGrid(packed, count: gridCount)
 
     let mlpCount = NTCFile.mlpFloatCount(fPerGrid: Int(header.fPerGrid),
                                          peWaves:  Int(header.peWaves),
@@ -203,8 +213,8 @@ public func readNTC(from data: Data) throws -> NTCFile {
                    pyramidSizes:     pyramidSizes,
                    neuralMipsForLod: neuralMipsForLod,
                    slots:            slots,
-                   grid:         grid,
-                   mlp:          mlp)
+                   grid:             grid,
+                   mlp:              mlp)
 }
 
 // MARK: Helpers
@@ -232,29 +242,34 @@ private func readArray<T>(from data: Data, at cursor: inout Int,
     return arr
 }
 
-/// Pack grid ints for 4-bit storage: two ints per byte (ints[2k] in the
-/// low, ints[2k+1] in the high). 8-bit passes through unchanged.
-/// A trailing odd int (can't happen for even fPerGrid) puts 0 in the high.
-func packGrid(_ codes: [UInt8], bits: Int) -> [UInt8] {
-    guard bits == 4 else { return codes }
+/// Pack grid codes for 4-bit storage: two codes per byte, codes[2k] in the low
+/// 4 bits [0,4) and codes[2k+1] in the high 4 bits [4,8).
+/// A trailing odd code (can't happen for even fPerGrid) leaves the high 4 bits 0.
+func packGrid(_ codes: [UInt8]) -> [UInt8] {
     var out = [UInt8](repeating: 0, count: (codes.count + 1) / 2)
     var i = 0
     while i < codes.count {
         let lo = codes[i] & 0x0F
-        let hi = (i + 1 < codes.count) ? (codes[i + 1] & 0x0F) : 0
+        var hi: UInt8 = 0
+        if i + 1 < codes.count {
+            hi = codes[i + 1] & 0x0F
+        }
         out[i / 2] = lo | (hi << 4)
         i += 2
     }
     return out
 }
 
-/// Inverse of `packGrid`: expand `count` ints back to one byte each.
-func unpackGrid(_ packed: [UInt8], count: Int, bits: Int) -> [UInt8] {
-    guard bits == 4 else { return packed }
+/// Inverse of `packGrid`: expand `count` codes back to one byte each.
+func unpackGrid(_ packed: [UInt8], count: Int) -> [UInt8] {
     var out = [UInt8](repeating: 0, count: count)
     for k in 0..<count {
         let byte = packed[k / 2]
-        out[k] = (k % 2 == 0) ? (byte & 0x0F) : (byte >> 4)
+        if k % 2 == 0 {
+            out[k] = byte & 0x0F
+        } else {
+            out[k] = byte >> 4
+        }
     }
     return out
 }

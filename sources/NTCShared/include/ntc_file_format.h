@@ -13,9 +13,9 @@
 //                              stored = clamp(round(f/q) + offset, 0, 2^bits-1)
 //                              decode = (stored - offset) * q     offset = 1<<(bits-1)
 //                            q = quantScale, bits = quantBits.
-//                            8-bit: one int per byte. 4-bit: packed two
-//                            ints per byte (even index low, odd high), so on
-//                            disk this is ceil(nInts/2) bytes.
+//                            bits is always 4, so the ints are packed two per
+//                            byte (even index low, odd high) and on disk this
+//                            is ceil(nInts/2) bytes.
 //   uint16_t mlp             [mlpFloatCount]       raw IEEE 754 binary16 bits
 //                                                  (only when header.mlpDType == NTC_MLP_DTYPE_FP16)
 //
@@ -50,7 +50,7 @@ typedef struct NTCHeader {
     uint32_t nSlots;
     uint32_t peWaves;
     float    quantScale;     // q; 0 means grid is stored raw (unused for now)
-    uint32_t quantBits;      // typically 8
+    uint32_t quantBits;      // always 4; readNTC rejects anything else
     uint32_t mlpDType;       // NTC_MLP_DTYPE_*
     uint32_t flags;          // reserved, zero
 } NTCHeader;

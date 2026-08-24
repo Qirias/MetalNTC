@@ -2,65 +2,75 @@ import Metal
 import Foundation
 
 public final class MetalContext {
-    public let device: any MTLDevice
-    public let queue: any MTL4CommandQueue
+    public let device:    any MTLDevice
+    public let queue:     any MTL4CommandQueue
     public let allocator: any MTL4CommandAllocator
-    public let compiler: any MTL4Compiler
-    public let library: any MTLLibrary
-    
-    /// Create a MetalContext that loads its default.metallib from the
-    /// given bundle.
-    ///
-    /// The bundle must be one whose SwiftPM target declares `resources`
-    /// pointing at a directory of `.metal` files (so Xcode emits a
-    /// `default.metallib` into that bundle). Callers normally pass
-    /// `Bundle.module` from inside the target that owns the shaders.
-    public init(bundle: Bundle) throws {
+    public let compiler:  any MTL4Compiler
+    public let library:   any MTLLibrary
+
+    /// `bundle` must belong to the SwiftPM target that owns the `.metal`
+    /// sources, so the `default.metallib` loaded is the one built from them.
+    /// Callers pass `NTCCoreResources.bundle`.
+    public init(bundle: Bundle) {
         guard let device = MTLCreateSystemDefaultDevice() else {
-            fatalError("This device does not support Metal")
+            fatalError("no Metal device on this machine")
         }
-        guard device.supportsFamily(.metal4)
-        else {
-            fatalError("This device does not support Metal 4")
+        guard device.supportsFamily(.metal4) else {
+            fatalError("\(device.name) does not support Metal 4")
         }
         self.device = device
 
         guard let queue = device.makeMTL4CommandQueue() else {
-            fatalError("Failed to create command MTL4CommandQueue")
+            fatalError("failed to create MTL4CommandQueue")
         }
         self.queue = queue
 
         guard let allocator = device.makeCommandAllocator() else {
-            fatalError("Failed to create MTLCommandAllocator")
+            fatalError("failed to create MTL4CommandAllocator")
         }
         self.allocator = allocator
 
-        let compilerDescriptor = MTL4CompilerDescriptor()
         do {
-            self.compiler = try device.makeCompiler(descriptor: compilerDescriptor)
+            self.compiler = try device.makeCompiler(descriptor: MTL4CompilerDescriptor())
         } catch {
-            fatalError("Failed to create MTL4Compiler: \(error)")
+            fatalError("failed to create MTL4Compiler: \(error)")
         }
 
         do {
             self.library = try device.makeDefaultLibrary(bundle: bundle)
         } catch {
-            fatalError("Failed to create MTLLibrary: \(error)")
+            fatalError("failed to load default.metallib from \(bundle.bundlePath): \(error)")
         }
     }
 
-    public func makeComputePipelineState(function name: String) throws -> any MTLComputePipelineState {
-        guard let function = library.makeFunction(name: name) else {
-            fatalError("Failed to create MTLFunction")
+    public func makeComputePipelineState(function name: String) -> any MTLComputePipelineState {
+        guard library.makeFunction(name: name) != nil else {
+            fatalError("no function named '\(name)' in default.metallib")
         }
 
         let functionDescriptor = MTL4LibraryFunctionDescriptor()
-        functionDescriptor.name = name
+        functionDescriptor.name    = name
         functionDescriptor.library = library
 
         let pipelineDescriptor = MTL4ComputePipelineDescriptor()
         pipelineDescriptor.computeFunctionDescriptor = functionDescriptor
-        
-        return try compiler.makeComputePipelineState(descriptor: pipelineDescriptor)
+
+        do {
+            return try compiler.makeComputePipelineState(descriptor: pipelineDescriptor)
+        } catch {
+            fatalError("failed to compile a compute pipeline for '\(name)': \(error)")
+        }
+    }
+
+    public func makeArgumentTable(buffers: Int, textures: Int = 0) -> any MTL4ArgumentTable {
+        let descriptor = MTL4ArgumentTableDescriptor()
+        descriptor.maxBufferBindCount  = buffers
+        descriptor.maxTextureBindCount = textures
+
+        do {
+            return try device.makeArgumentTable(descriptor: descriptor)
+        } catch {
+            fatalError("failed to create an argument table for \(buffers) buffers and \(textures) textures: \(error)")
+        }
     }
 }

@@ -21,18 +21,11 @@ public struct Manifest: Codable {
     }
     public let models: [Model]
 
-    /// Load a manifest.json. Accepts the new `{ "models": [...] }` shape, or the
-    /// old flat `{ "textures": [...] }` (a texture-only set, e.g. the Manhole),
-    /// which is wrapped as a single model named after the parent directory.
+    /// Load a manifest.json: `{ "models": [ { "name", "textures" } ] }`.
+    /// A malformed file throws out of JSONDecoder with the offending key path.
     public static func load(from url: URL) throws -> Manifest {
         let data = try Data(contentsOf: url)
-        if let manifest = try? JSONDecoder().decode(Manifest.self, from: data) {
-            return manifest
-        }
-        struct Flat: Decodable { let textures: [Entry] }
-        let flat = try JSONDecoder().decode(Flat.self, from: data)
-        let name = url.deletingLastPathComponent().lastPathComponent
-        return Manifest(models: [Model(name: name, textures: flat.textures)])
+        return try JSONDecoder().decode(Manifest.self, from: data)
     }
 }
 
@@ -105,7 +98,7 @@ public struct TextureSet {
         }
 
         guard let first = images.first else {
-            preconditionFailure("manifest declares no textures")
+            preconditionFailure("model '\(name)' declares no textures")
         }
         for (s, img) in zip(slots, images) {
             precondition(img.width == first.width && img.height == first.height,

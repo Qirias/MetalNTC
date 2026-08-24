@@ -83,8 +83,9 @@ stored = clamp(round(f/q) + offset, 0, 2^bits - 1)
 decode = (stored - offset) * q      offset = 1 << (bits-1),  q = quantScale
 ```
 
-8-bit stores one int per byte. **4-bit packs two per byte, even index in the low
-nibble**, so the grid occupies `ceil(nInts/2)` bytes on disk. This on-disk packing
+The grid is always 4-bit: **two ints pack into one byte, the even index in the
+low 4 bits `[0,4)` and the odd index in the high `[4,8)`**, so the grid occupies
+`ceil(nInts/2)` bytes on disk. This on-disk packing
 is a separate question from the `abgr4` channel order you upload it in — see
 Gotchas, they do not agree.
 
@@ -169,9 +170,9 @@ the Metal 5 tensor path (`matmul2d`) would only swap the MLP leaf later.
 
 ## Gotchas
 
-- **abgr4 channel order:** `.r` is the *high* nibble `[12,16)`, `.a` the low
-  `[0,4)`. Pack feature `4·slice+0` into the high nibble. Verify packed formats
-  with a 1×1 probe; the docs had this backwards.
+- **abgr4 channel order:** in the 16-bit texel `.r` is the *most significant* 4
+  bits `[12,16)` and `.a` the least `[0,4)`. Pack feature `4·slice+0` into the
+  MSBs. Verify packed formats with a 1×1 probe; the docs had this backwards.
 - **Align-corners remap:** the trainer's bilinear is align-corners; the HW
   sampler is texel-center. `sample_latent_grid` feeds `uv' = (uv·(N−1)+0.5)/N` to
   reproduce it exactly. Keep that remap or the reconstruction shifts.
@@ -347,5 +348,5 @@ Three small harnesses that repay their cost immediately:
   reference one, and scores against the source image. This is what distinguishes
   "the decode is wrong" from "the material plumbing is wrong". Mind the alpha
   caveat above.
-- A **1×1 probe** for packed formats, to confirm `abgr4` nibble order on your
-  hardware rather than trusting documentation.
+- A **1×1 probe** for packed formats, to confirm which 4 bits of an `abgr4`
+  texel each channel occupies on your hardware rather than trusting documentation.

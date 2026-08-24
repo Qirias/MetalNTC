@@ -14,26 +14,26 @@ public final class MipPyramidBuilder {
     public let srcW:           Int
     public let srcH:           Int
 
-    private let pso:            any MTLComputePipelineState
-    private let constsBuffer:   any MTLBuffer
-    private let atomicBuffer:   any MTLBuffer
-    private let argTable:       any MTL4ArgumentTable
-    private let sourceTexture:  any MTLTexture
-    private let wgX:            Int
-    private let wgY:            Int
+    private let pso:           any MTLComputePipelineState
+    private let constsBuffer:  any MTLBuffer
+    private let atomicBuffer:  any MTLBuffer
+    private let argTable:      any MTL4ArgumentTable
+    private let sourceTexture: any MTLTexture
+    private let wgX:           Int
+    private let wgY:           Int
 
-    public init(ctx: MetalContext, srcW: Int, srcH: Int, sourceTexture: any MTLTexture) throws {
+    public init(ctx: MetalContext, srcW: Int, srcH: Int, sourceTexture: any MTLTexture) {
         precondition(srcW > 0 && srcH > 0)
         precondition(sourceTexture.width == srcW && sourceTexture.height == srcH,
                      "sourceTexture is \(sourceTexture.width)x\(sourceTexture.height), expected \(srcW)x\(srcH)")
 
-        self.srcW = srcW
-        self.srcH = srcH
+        self.srcW          = srcW
+        self.srcH          = srcH
         self.sourceTexture = sourceTexture
 
         self.mipCount = Int(log2(Double(max(srcW, srcH)))) + 1
-        self.mipSizes = (0..<mipCount).map { i in
-            (w: max(srcW >> i, 1), h: max(srcH >> i, 1))
+        self.mipSizes = (0..<mipCount).map { level in
+            (w: max(srcW >> level, 1), h: max(srcH >> level, 1))
         }
 
         let desc = MTLTextureDescriptor()
@@ -45,33 +45,29 @@ public final class MipPyramidBuilder {
         desc.mipmapLevelCount = mipCount
         desc.usage            = [.shaderRead, .shaderWrite]
         desc.storageMode      = .shared
-        self.pyramidTexture   = ctx.device.makeTexture(descriptor: desc)!
+        self.pyramidTexture       = ctx.device.makeTexture(descriptor: desc)!
         self.pyramidTexture.label = "SPD.pyramid"
 
-        self.pso = try ctx.makeComputePipelineState(function: "downsample_2x2")
+        self.pso = ctx.makeComputePipelineState(function: "downsample_2x2")
+
+        self.wgX = (srcW + 63) / 64
+        self.wgY = (srcH + 63) / 64
+
+        var consts = SPDConstants()
+        consts.numWorkgroups = UInt32(wgX * wgY)
+        consts.mipCount      = UInt32(mipCount)
 
         self.constsBuffer = ctx.device.makeBuffer(length: MemoryLayout<SPDConstants>.stride,
                                                   options: .storageModeShared)!
         self.constsBuffer.label = "SPD.consts"
-        var consts = SPDConstants()
-        let wgX = (srcW + 64 - 1) / 64
-        let wgY = (srcH + 64 - 1) / 64
-        consts.numWorkgroups = UInt32(wgX * wgY)
-        consts.mipCount      = UInt32(mipCount)
         constsBuffer.contents().bindMemory(to: SPDConstants.self, capacity: 1).pointee = consts
-        self.wgX = wgX
-        self.wgY = wgY
-
 
         self.atomicBuffer = ctx.device.makeBuffer(length: MemoryLayout<UInt32>.stride,
                                                   options: .storageModeShared)!
         self.atomicBuffer.label = "SPD.workgroupCounter"
         memset(atomicBuffer.contents(), 0, MemoryLayout<UInt32>.stride)
 
-        let argDesc = MTL4ArgumentTableDescriptor()
-        argDesc.maxBufferBindCount  = 2
-        argDesc.maxTextureBindCount = 2
-        self.argTable = try ctx.device.makeArgumentTable(descriptor: argDesc)
+        self.argTable = ctx.makeArgumentTable(buffers: 2, textures: 2)
         argTable.setTexture(sourceTexture.gpuResourceID,  index: 0)
         argTable.setTexture(pyramidTexture.gpuResourceID, index: 1)
         argTable.setAddress(atomicBuffer.gpuAddress,      index: 0)
