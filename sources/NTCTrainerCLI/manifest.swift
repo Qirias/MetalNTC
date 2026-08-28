@@ -14,7 +14,8 @@ public struct Manifest: Codable {
         public let semantics: [String: String]
     }
     /// One trainable unit: the texture slots of a single glTF material.
-    /// `name` becomes the .ntc filename (`<name>.ntc`).
+    /// `name` becomes the .ntc basename; the quality is appended, so the file is
+    /// `<name>_<quality>.ntc` (see Quality.ntcFileName).
     public struct Model: Codable {
         public let name: String
         public let textures: [Entry]
@@ -41,7 +42,7 @@ public struct TextureSlot {
 }
 
 public struct TextureSet {
-    public let name: String        // model name -> <name>.ntc
+    public let name: String        // model name -> <name>_<quality>.ntc
     public let slots: [TextureSlot]
     public let kOut: Int
     public let manifestDir: URL
@@ -97,12 +98,15 @@ public struct TextureSet {
             images.append(try extract_swizzle(rgba, swizzle: s.swizzle))
         }
 
-        guard let first = images.first else {
+        guard let first = images.first, let firstSlot = slots.first else {
             preconditionFailure("model '\(name)' declares no textures")
         }
+        
+        // could be handled by upscaling the low resolution textures to match
         for (s, img) in zip(slots, images) {
-            precondition(img.width == first.width && img.height == first.height,
-                         "\(s.fileName): \(img.width)x\(img.height) does not match \(first.width)x\(first.height)")
+            if img.width != first.width || img.height != first.height {
+                throw TrainerError.msg("mixed texture sizes: \(s.fileName) is \(img.width)x\(img.height) but \(firstSlot.fileName) is \(first.width)x\(first.height); NTC needs one resolution per model")
+            }
         }
         precondition(first.width == first.height, "non-square sources not supported (got \(first.width)x\(first.height))")
         precondition(first.width > 0 && (first.width & (first.width - 1)) == 0, "source width \(first.width) is not a power of two")

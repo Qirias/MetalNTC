@@ -1,15 +1,6 @@
 import Foundation
 
-/// The mapping is mechanical (glTF PBR metallic-roughness -> NTC semantics):
-///   baseColorTexture         -> Albedo    RGB (sRGB)
-///   normalTexture            -> Normal    RGB
-///   metallicRoughnessTexture -> Roughness G  + Metalness B
-///   occlusionTexture         -> Occlusion R
-///   emissiveTexture          -> Emissive  RGB (sRGB)
 enum ManifestGen {
-
-    // Only the fields we map. glTF references a texture by index; a texture
-    // points at an image `source`; the image carries the `uri` (the file name).
     private struct GLTFDoc: Decodable {
         struct TexRef:   Decodable {
             let index: Int

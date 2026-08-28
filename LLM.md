@@ -83,11 +83,14 @@ stored = clamp(round(f/q) + offset, 0, 2^bits - 1)
 decode = (stored - offset) * q      offset = 1 << (bits-1),  q = quantScale
 ```
 
-The grid is always 4-bit: **two ints pack into one byte, the even index in the
-low 4 bits `[0,4)` and the odd index in the high `[4,8)`**, so the grid occupies
-`ceil(nInts/2)` bytes on disk. This on-disk packing
-is a separate question from the `abgr4` channel order you upload it in — see
-Gotchas, they do not agree.
+The format carries `quantBits` (4 or 8), but the trainer currently always writes
+**4-bit** (`BITS` in `NTCTrainerCLI/config.swift`). At 4 bits **two ints pack into
+one byte, the even index in the low 4 bits `[0,4)` and the odd index in the high
+`[4,8)`**, so the grid occupies `ceil(nInts/2)` bytes on disk; at 8 bits it is one
+int per byte. Branch on `header.quantBits` rather than assuming 4, since that also
+selects the upload format (`abgr4Unorm` vs `rgba8Unorm`). This on-disk packing is a
+separate question from the `abgr4` channel order you upload it in — see Gotchas,
+they do not agree.
 
 **`mlpFloatCount`** is derived from the header, not stored:
 
@@ -166,7 +169,8 @@ for a `materialIndex → NTC resource` argument buffer.
 The runtime decode is **plain MSL and runs on Metal 3** — texture sampling, fp16
 math, a buffer read. Nothing in the decode path needs Metal 4. Only the *trainer*
 uses the Metal 4 command/queue API. So a Metal 3 engine can consume `.ntc` today;
-the Metal 5 tensor path (`matmul2d`) would only swap the MLP leaf later.
+the MSL tensor path (`matmul2d`, Metal 4 on M5-class hardware) would only swap
+the MLP leaf later.
 
 ## Gotchas
 
@@ -193,11 +197,24 @@ Failure modes and design decisions that are not visible from the API surface.
 
 ### Before anything: producing a `.ntc`
 
-`swift build` copies the `.metal` sources into the `NTCCore` resource bundle but
-does **not** produce the `default.metallib` that `MetalContext(bundle:)` opens, so
-the trainer CLI aborts with *no default library was found*. Compile the metallib
-by hand after any clean build. This blocks step zero, before any integration work
-starts.
+**Build in Xcode.** A plain `swift build` copies the `.metal` sources into the
+`NTCCore` resource bundle but does **not** compile them, so the
+`default.metallib` that `MetalContext(bundle:)` opens is never produced and the
+trainer aborts with *no default library was found*. Xcode compiles the shaders
+as part of building the package; the SwiftPM command line does not. This blocks
+step zero, before any integration work starts.
+
+The consequence for an integrator is worth stating plainly: **do not wire
+`swift build` into your engine's build system** expecting a runnable trainer.
+Producing a `.ntc` is an offline step you do in Xcode, and the engine consumes
+the file afterwards. Anything that shells out to SwiftPM has to compile and
+install the metallib itself, which is a moving part with no upside.
+
+Related: use the **Release** configuration. The image loader's per-pixel
+`UInt8 → Float` and swizzle loops are ~490× slower unoptimised, which turns a
+2048² decode from 80 ms into 6.8 s and a few hundred textures into minutes.
+`NTC_DEBUG` (`Package.swift`) is independent of the optimisation level, so the
+PSNR tables and atlas dumps survive a Release build.
 
 ### `.ntc` carries no alpha
 
@@ -224,12 +241,68 @@ Two consequences for an integrator:
 Supporting alpha means changing both layers — a `premultipliedLast`/`last`
 decode plus an `"Alpha": "A"` mapping — and retraining.
 
+### Finding the `.ntc`: the filename carries the quality
+
+The trainer writes **one `.ntc` per quality profile**, and tags the filename with
+it (`Quality.ntcFileName`, `NTCCore/quality.swift`):
+
+```
+<material name>_<quality>.ntc      e.g. Foliage_Leaves_high.ntc
+```
+
+`<quality>` is one of `low`, `medium`, `high`, `veryHigh`. The material name is
+the glTF material name with every character outside `[A-Za-z0-9-_.]` replaced by
+`_`, and an unnamed material falls back to `material_<index>` — mirror
+`ManifestGen.safeName` exactly or nothing resolves.
+
+Getting this wrong fails **silently**: a missing `.ntc` is also the legitimate
+"this material is not neural" signal, so the loader falls back to textures and
+the scene renders correctly from the source images. Log the miss during bring-up,
+or you will spend a while wondering why nothing changed.
+
+**The profile only changes storage, never decode cost.** `Quality.gridScale`
+divides the source width to size the finest latent grid (`veryHigh` ÷3, `high`
+÷4, `medium` ÷6, `low` ÷8); the eight grids, the 16 features per texel, `F_IN`
+and the MLP shape are identical across all four. Same sample count, same MAC
+count, same frame time. So an engine can mix profiles per material — `veryHigh`
+on hero assets, `low` on background — with no performance variance, and can
+change profile without re-tuning anything in the shader.
+
 ### Not every material can be trained
 
-`PYRAMID_PRESETS` (`NTCTrainerCLI/main.swift:95`) is keyed by the **exact** source
-width: 4096, 2048, 1024. Any other width throws `no pyramid preset for WxH`. A
-material whose only texture is a small solid-colour swatch cannot be compressed
-at all.
+Two conditions take a material out of the neural path, and both are decided
+while training, so your loader has to cope with a `.ntc` simply not existing.
+
+**Unsupported source width.** `MIP_MAPS` (`NTCTrainerCLI/config.swift:10`) is
+keyed by the **exact** source width: 4096, 2048, 1024, 512. Any other width
+throws `no mip map for WxH; add one to MIP_MAPS`. A material whose only texture
+is a small solid-colour swatch cannot be compressed at all.
+
+**Mixed texture resolutions inside one material.** Every slot of a model feeds
+one texture array and one latent grid, so the whole set has to agree on
+resolution. A model mixing, say, a 2048² roughness map with 512² everything else
+throws `mixed texture sizes: ...` (`NTCTrainerCLI/manifest.swift`) and is skipped.
+This is common in real assets — Amazon Lumberyard Bistro has 380 textures at 512²
+and a single 2048² outlier, which is enough to disqualify the material that uses
+it.
+
+The trainer skips rather than resamples, because either direction is a quality
+decision the tool should not make silently. If you want those materials on the
+neural path, resample in `loadImages()` before the size check, and pick the
+direction deliberately:
+
+- **Upscale the small ones to the largest slot.** Preserves the detailed maps and
+  — because latent storage is set by grid resolution and is *flat in channel
+  count* — costs **nothing** in `.ntc` size. An upscaled 512² roughness map adds
+  no bytes; it just cannot carry detail it never had. This is the right default.
+- **Downscale everything to the smallest slot.** Shrinks the `.ntc`, but throws
+  away real detail in the albedo and normal maps to accommodate whichever slot
+  happened to be lowest-resolution. Rarely what you want.
+
+Until then such materials stay on traditional texture sampling.
+
+Both are thrown, not trapped, so a batch of hundreds of models keeps going and
+reports what it skipped at the end.
 
 So your material system needs a **per-material fallback to the conventional
 texture path**, selected at load time. Treat "is neural" as a property of the

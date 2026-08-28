@@ -11,7 +11,7 @@ import AppKit
 // Set INPUT_OVERRIDE to compress a fixed path and skip the open panel
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover010_4K-PNG"
 //   "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCRenderer/assets/models/flighthelmet/scene.gltf"
-let INPUT_OVERRIDE: String? = "/Users/kiriakosgavras/Documents/MetalNTC/sources/NTCAssets/textures/ManholeCover008_2K-PNG"
+let INPUT_OVERRIDE: String? = ""
 
 let inputURL: URL
 if let path = INPUT_OVERRIDE, !path.isEmpty {

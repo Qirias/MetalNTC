@@ -26,12 +26,12 @@ Requires macOS 26 + Xcode 26 (Metal 4) on Apple silicon.
 ## Run
 
 - **NTCTrainerCLI** — run it; a file picker opens to choose a `.gltf`,
-  `manifest.json`, or texture folder. It writes `<material>.ntc` beside the input.
-  (You can also pass a path as the first argument, or set `INPUT_OVERRIDE` in
-  `sources/NTCTrainerCLI/main.swift`.)
+  `manifest.json`, or texture folder. It writes `<material>_<quality>.ntc` beside
+  the input. (Set `INPUT_OVERRIDE` in `sources/NTCTrainerCLI/main.swift` to skip
+  the picker.)
 - **NTCRenderer** — run it (needs the submodule); opens a window and renders the
   demo model from its `.ntc`.
 
 ## Integrate into your engine
 
-See [INTEGRATION.md](INTEGRATION.md).
+See [LLM.md](LLM.md).
