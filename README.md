@@ -4,13 +4,12 @@ Metal 4 implementation of Neural Texture Compression (NTC): compress a set of
 material textures into feature grids + a small MLP, decode per pixel at render
 time.
 
-- **Trainer** — turns textures into a `.ntc` file.
-- **Renderer** — optional submodule ([MetalNTC-Renderer](https://github.com/Qirias/MetalNTC-Renderer)) that displays a glTF shaded from its `.ntc`. Holds the demo assets, so a bare clone stays small.
+- **Trainer** will produce a `.ntc` file for each mesh in the `.gltf`.
+- **Renderer** is an optional submodule ([MetalNTC-Renderer](https://github.com/Qirias/MetalNTC-Renderer)) that displays a glTF shaded from its `.ntc`.
 
 ## Install
 
 ```sh
-# core + trainer only
 git clone https://github.com/Qirias/MetalNTC.git
 
 # also get the renderer + demo assets
@@ -18,19 +17,27 @@ git clone --recurse-submodules https://github.com/Qirias/MetalNTC.git
 # (or in an existing clone) git submodule update --init sources/NTCRenderer
 ```
 
-Open the package in **Xcode** and build. Xcode compiles the Metal shaders into
-`default.metallib`; a plain `swift build` does not, so use Xcode.
+```sh
+cd MetalNTC
+open Package.swift
+```
 
+Then pick a scheme (`NTCTrainer` or `NTCRenderer`) and build.
 Requires macOS 26 + Xcode 26 (Metal 4) on Apple silicon.
+
+### Debug or release
+
+Product -> Scheme -> Edit Scheme...-> **Run** -> **Info** -> Build Configuration.
+
+Prefer **Release** for anything real.
 
 ## Run
 
-- **NTCTrainerCLI** — run it; a file picker opens to choose a `.gltf`,
+- **NTCTrainer** opens a file picker to choose a `.gltf`,
   `manifest.json`, or texture folder. It writes `<material>_<quality>.ntc` beside
-  the input. (Set `INPUT_OVERRIDE` in `sources/NTCTrainerCLI/main.swift` to skip
+  the input. (Set `INPUT_OVERRIDE` in `sources/NTCTrainer/main.swift` to skip
   the picker.)
-- **NTCRenderer** — run it (needs the submodule); opens a window and renders the
-  demo model from its `.ntc`.
+- **NTCRenderer** opens a window and renders the demo model from its `.ntc`.
 
 ## Integrate into your engine
 

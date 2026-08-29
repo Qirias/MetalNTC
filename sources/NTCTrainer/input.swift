@@ -14,7 +14,7 @@ enum TrainerError: Error, CustomStringConvertible {
 }
 
 let DEFAULT_BROWSE_DIR = URL(fileURLWithPath: #filePath)
-    .deletingLastPathComponent()   // sources/NTCTrainerCLI
+    .deletingLastPathComponent()   // sources/NTCTrainer
     .deletingLastPathComponent()   // sources
     .appendingPathComponent("NTCRenderer/assets/models")
 

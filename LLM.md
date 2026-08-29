@@ -9,7 +9,7 @@ production renderer actually cost.
 
 The **runtime decode**, per pixel: given a `.ntc`, a `uv`, and a mip `lod`,
 reconstruct a `Material` (albedo, normal, roughness, metalness, occlusion,
-emissive). The trainer (`NTCTrainerCLI`) produces the `.ntc`; your renderer
+emissive). The trainer (`NTCTrainer`) produces the `.ntc`; your renderer
 consumes it. You do **not** need any of the training code at runtime.
 
 ## Reusable pieces (include or copy)
@@ -84,7 +84,7 @@ decode = (stored - offset) * q      offset = 1 << (bits-1),  q = quantScale
 ```
 
 The format carries `quantBits` (4 or 8), but the trainer currently always writes
-**4-bit** (`BITS` in `NTCTrainerCLI/config.swift`). At 4 bits **two ints pack into
+**4-bit** (`BITS` in `NTCTrainer/config.swift`). At 4 bits **two ints pack into
 one byte, the even index in the low 4 bits `[0,4)` and the odd index in the high
 `[4,8)`**, so the grid occupies `ceil(nInts/2)` bytes on disk; at 8 bits it is one
 int per byte. Branch on `header.quantBits` rather than assuming 4, since that also
@@ -221,7 +221,7 @@ PSNR tables and atlas dumps survive a Release build.
 Nothing in the pipeline preserves an alpha channel, and it is dropped twice, in
 two independent places:
 
-- `NTCTrainerCLI/manifest_gen.swift` maps `baseColorTexture` as
+- `NTCTrainer/manifest_gen.swift` maps `baseColorTexture` as
   `["Albedo": "RGB"]`. The `A` channel is never given a semantic, so the trainer
   is never asked to learn it.
 - `NTCAssets/image_loader.swift` decodes with `CGImageAlphaInfo.noneSkipLast`,
@@ -273,7 +273,7 @@ change profile without re-tuning anything in the shader.
 Two conditions take a material out of the neural path, and both are decided
 while training, so your loader has to cope with a `.ntc` simply not existing.
 
-**Unsupported source width.** `MIP_MAPS` (`NTCTrainerCLI/config.swift:10`) is
+**Unsupported source width.** `MIP_MAPS` (`NTCTrainer/config.swift:10`) is
 keyed by the **exact** source width: 4096, 2048, 1024, 512. Any other width
 throws `no mip map for WxH; add one to MIP_MAPS`. A material whose only texture
 is a small solid-colour swatch cannot be compressed at all.
@@ -281,7 +281,7 @@ is a small solid-colour swatch cannot be compressed at all.
 **Mixed texture resolutions inside one material.** Every slot of a model feeds
 one texture array and one latent grid, so the whole set has to agree on
 resolution. A model mixing, say, a 2048² roughness map with 512² everything else
-throws `mixed texture sizes: ...` (`NTCTrainerCLI/manifest.swift`) and is skipped.
+throws `mixed texture sizes: ...` (`NTCTrainer/manifest.swift`) and is skipped.
 This is common in real assets — Amazon Lumberyard Bistro has 380 textures at 512²
 and a single 2048² outlier, which is enough to disqualify the material that uses
 it.
