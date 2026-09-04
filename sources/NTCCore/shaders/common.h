@@ -1,6 +1,14 @@
 #pragma once
 
 #include "../../NTCShared/include/ntc_constants.h"
+
+#define NTC_TENSOR_OPS
+
+#ifdef NTC_TENSOR_OPS
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#endif
+
 using namespace metal;
 
 struct SPDConstants {
@@ -131,9 +139,9 @@ inline void pe_encode(float2 posf, thread half* pe) {
 }
     
 inline void mlp_forward(device const float* params,
-                        uint off_w1, uint off_b1,
-                        uint off_w2, uint off_b2,
-                        uint off_w3, uint off_b3,
+                        uint offset_w1, uint offset_b1,
+                        uint offset_w2, uint offset_b2,
+                        uint offset_w3, uint offset_b3,
                         uint in_dim, uint hidden, uint out_dim,
                         thread const float* features,
                         thread half* pre1, thread half* hid1,
@@ -146,9 +154,9 @@ inline void mlp_forward(device const float* params,
 
     // Linear1 + hardGELU
     for (uint h = 0; h < hidden; h++) {
-        half acc = half(params[off_b1 + h]);
+        half acc = half(params[offset_b1 + h]);
         for (uint i = 0; i < in_dim; i++) {
-            acc += half(params[off_w1 + h * in_dim + i]) * feat_h[i];
+            acc += half(params[offset_w1 + h * in_dim + i]) * feat_h[i];
         }
         pre1[h] = acc;
         hid1[h] = hard_gelu(acc);
@@ -156,9 +164,9 @@ inline void mlp_forward(device const float* params,
 
     // Linear2 + hardGELU
     for (uint h = 0; h < hidden; h++) {
-        half acc = half(params[off_b2 + h]);
+        half acc = half(params[offset_b2 + h]);
         for (uint i = 0; i < hidden; i++) {
-            acc += half(params[off_w2 + h * hidden + i]) * hid1[i];
+            acc += half(params[offset_w2 + h * hidden + i]) * hid1[i];
         }
         pre2[h] = acc;
         hid2[h] = hard_gelu(acc);
@@ -166,9 +174,9 @@ inline void mlp_forward(device const float* params,
 
     // Linear3
     for (uint k = 0; k < out_dim; k++) {
-        half acc = half(params[off_b3 + k]);
+        half acc = half(params[offset_b3 + k]);
         for (uint h = 0; h < hidden; h++) {
-            acc += half(params[off_w3 + k * hidden + h]) * hid2[h];
+            acc += half(params[offset_w3 + k * hidden + h]) * hid2[h];
         }
         pred[k] = acc;
     }
@@ -193,9 +201,9 @@ inline void sample_latent_grid(texture2d_array<float> latents,
 }
 
 inline void mlp_forward_h(device const half* mlp,
-                          uint off_w1, uint off_b1,
-                          uint off_w2, uint off_b2,
-                          uint off_w3, uint off_b3,
+                          uint offset_w1, uint offset_b1,
+                          uint offset_w2, uint offset_b2,
+                          uint offset_w3, uint offset_b3,
                           uint in_dim, uint hidden, uint out_dim,
                           thread const half* features,
                           thread half* hid1, thread half* hid2,
@@ -212,12 +220,12 @@ inline void mlp_forward_h(device const half* mlp,
     // Linear1 + hardGELU
     // one output row at a time
     for (uint outNeuron = 0; outNeuron < hidden; outNeuron++) {
-        device const half4* weightRow = (device const half4*)(mlp + off_w1 + outNeuron * in_dim);
+        device const half4* weightRow = (device const half4*)(mlp + offset_w1 + outNeuron * in_dim);
         half4 rowAcc4 = half4(0.0h);
         for (uint group = 0; group < in_dim / 4; group++) {
             rowAcc4 += weightRow[group] * input4[group];
         }
-        half rowSum = mlp[off_b1 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
+        half rowSum = mlp[offset_b1 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
         hid1[outNeuron] = hard_gelu(rowSum);
     }
 
@@ -231,12 +239,12 @@ inline void mlp_forward_h(device const half* mlp,
 
     // Linear2 + hardGELU
     for (uint outNeuron = 0; outNeuron < hidden; outNeuron++) {
-        device const half4* weightRow = (device const half4*)(mlp + off_w2 + outNeuron * hidden);
+        device const half4* weightRow = (device const half4*)(mlp + offset_w2 + outNeuron * hidden);
         half4 rowAcc4 = half4(0.0h);
         for (uint group = 0; group < hidden / 4; group++) {
             rowAcc4 += weightRow[group] * hidden4[group];
         }
-        half rowSum = mlp[off_b2 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
+        half rowSum = mlp[offset_b2 + outNeuron] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
         hid2[outNeuron] = hard_gelu(rowSum);
     }
 
@@ -249,29 +257,103 @@ inline void mlp_forward_h(device const half* mlp,
 
     // Linear3
     for (uint outChannel = 0; outChannel < out_dim; outChannel++) {
-        device const half4* weightRow = (device const half4*)(mlp + off_w3 + outChannel * hidden);
+        device const half4* weightRow = (device const half4*)(mlp + offset_w3 + outChannel * hidden);
         half4 rowAcc4 = half4(0.0h);
         for (uint group = 0; group < hidden / 4; group++) {
             rowAcc4 += weightRow[group] * hidden4[group];
         }
-        pred[outChannel] = mlp[off_b3 + outChannel] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
+        pred[outChannel] = mlp[offset_b3 + outChannel] + rowAcc4.x + rowAcc4.y + rowAcc4.z + rowAcc4.w;
     }
 }
 
-inline void ntc_decode_quant(float2                   uv,
-                             uint                     lod,
-                             texture2d_array<float>   latents,
-                             sampler                  latentSampler,
-                             float                    gridScale,
-                             float                    gridBias,
-                             device const half*       mlp,
-                             constant StepConstants&  consts,
-                             thread half*             pred) {
+#ifdef NTC_TENSOR_OPS
+
+#define TILE_SIZE   64
+#define TILE_THREADS  128   // 4 simdgroups
+
+inline void mlp_forward_tensor_ops(device const half*  mlp,
+                                   uint offset_w1, uint offset_b1,
+                                   uint offset_w2, uint offset_b2,
+                                   uint offset_w3, uint offset_b3,
+                                   threadgroup half* features,
+                                   threadgroup half* hidden,
+                                   threadgroup half* pred) {
+    
+    constexpr auto descriptor1 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_HIDDEN,  F_IN, false, true, false);
+    constexpr auto descriptor2 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_HIDDEN,  K_HIDDEN, false, true, false);
+    constexpr auto descriptor3 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_OUT_MAX, K_HIDDEN, false, true, false);
+    
+    // Layer 1
+    {
+        mpp::tensor_ops::matmul2d<descriptor1, execution_simdgroups<4>> operation;
+        auto inputRows    = tensor(features, extents<int, F_IN, TILE_SIZE>());
+        auto weightMatrix = tensor((device half*)(mlp + offset_w1), extents<int, F_IN, K_HIDDEN>());
+        auto cooperativeTensor = operation.get_destination_cooperative_tensor<decltype(inputRows), decltype(weightMatrix), half>();
+        operation.run(inputRows, weightMatrix, cooperativeTensor);
+
+        for (uint16_t element = 0; element < cooperativeTensor.get_capacity(); element++) {
+            auto coordinate = cooperativeTensor.get_multidimensional_index(element);
+            uint outNeuron = uint(coordinate[0]); // column = the bias index
+            cooperativeTensor[element] = hard_gelu(cooperativeTensor[element] + mlp[offset_b1 + outNeuron]);
+        }
+        auto destination = tensor(hidden, extents<int, K_HIDDEN, TILE_SIZE>());
+        cooperativeTensor.store(destination);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Layer 2
+    {
+        mpp::tensor_ops::matmul2d<descriptor2, execution_simdgroups<4>> operation;
+        auto inputRows    = tensor(hidden, extents<int, K_HIDDEN, TILE_SIZE>());
+        auto weightMatrix = tensor((device half*)(mlp + offset_w2), extents<int, K_HIDDEN, K_HIDDEN>());
+        auto cooperativeTensor = operation.get_destination_cooperative_tensor<decltype(inputRows), decltype(weightMatrix), half>();
+        operation.run(inputRows, weightMatrix, cooperativeTensor);
+        
+        for (uint16_t element = 0; element < cooperativeTensor.get_capacity(); element++) {
+            auto coordinate = cooperativeTensor.get_multidimensional_index(element);
+            uint outNeuron = uint(coordinate[0]);
+            cooperativeTensor[element] = hard_gelu(cooperativeTensor[element] + mlp[offset_b2 + outNeuron]);
+        }
+        
+        // inputRows and destination is the same tensor
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        auto destination = tensor(hidden, extents<int, K_HIDDEN, TILE_SIZE>());
+        cooperativeTensor.store(destination);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Layer 3
+    {
+        mpp::tensor_ops::matmul2d<descriptor3, execution_simdgroups<4>> operation;
+        auto inputRows    = tensor(hidden, extents<int, K_HIDDEN, TILE_SIZE>());
+        auto weightMatrix = tensor((device half*)(mlp + offset_w3), extents<int, K_HIDDEN, K_OUT_MAX>());
+        auto cooperativeTensor = operation.get_destination_cooperative_tensor<decltype(inputRows), decltype(weightMatrix), half>();
+        operation.run(inputRows, weightMatrix, cooperativeTensor);
+        
+        for (uint16_t element = 0; element < cooperativeTensor.get_capacity(); element++) {
+            auto coordinate = cooperativeTensor.get_multidimensional_index(element);
+            uint outNeuron = uint(coordinate[0]);
+            cooperativeTensor[element] = cooperativeTensor[element] + mlp[offset_b3 + outNeuron];
+        }
+        auto destination = tensor(pred, extents<int, K_OUT_MAX, TILE_SIZE>());
+        cooperativeTensor.store(destination);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+}
+
+#endif // NTC_TENSOR_OPS
+
+inline void ntc_build_features(float2                   uv,
+                               uint                     lod,
+                               texture2d_array<float>   latents,
+                               sampler                  latentSampler,
+                               float                    gridScale,
+                               float                    gridBias,
+                               constant StepConstants&  consts,
+                               thread half*             features) {
     uint neural_mip = consts.neuralMipForLod[lod];
     uint g0_size    = consts.pyramidSizes[neural_mip];
     uint g1_size    = consts.pyramidSizes[neural_mip + 1];
-
-    half features[F_IN];
 
     sample_latent_grid(latents, latentSampler, uv, neural_mip,     g0_size,
                        gridScale, gridBias, features);
@@ -284,6 +366,20 @@ inline void ntc_decode_quant(float2                   uv,
     for (uint i = F_IN_RAW; i < F_IN; i++) {
         features[i] = 0.0h;   // zero padded lanes
     }
+}
+
+inline void ntc_decode_quant(float2                   uv,
+                             uint                     lod,
+                             texture2d_array<float>   latents,
+                             sampler                  latentSampler,
+                             float                    gridScale,
+                             float                    gridBias,
+                             device const half*       mlp,
+                             constant StepConstants&  consts,
+                             thread half*             pred) {
+    half features[F_IN];
+    ntc_build_features(uv, lod, latents, latentSampler,
+                       gridScale, gridBias, consts, features);
 
     half hid1[K_HIDDEN];
     half hid2[K_HIDDEN];
