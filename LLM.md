@@ -266,6 +266,28 @@ is enough if you pack:
 Clear `.z` to the "not neural" sentinel so background and non-neural pixels fall
 out of the same test.
 
+**Your G-buffer formats may not be writable from compute.** `MTLReadWriteTextureTier`
+covers `r32*` at tier 1 and adds `rgba32*`, `rgba16*`, `rgba8unorm`, `r16*`,
+`r8*` at tier 2. **No sRGB format is in either tier**, and G-buffers commonly
+store albedo and emissive as `rgba8unorm_srgb`. Declaring one `access::write` or
+`access::read_write` does not fail loudly — the writes simply never land, and you
+get a G-buffer holding whatever the fragment shader left there. If your neural
+materials render flat and untextured while everything else looks right, check
+this first.
+
+The fix is a linear view of the same storage: create the texture with
+`MTLTextureUsagePixelFormatView`, make an `rgba8unorm` view for the compute pass
+to write, and keep reading through the sRGB texture. The view bypasses the
+hardware sRGB encode, so the shader has to apply it:
+
+```metal
+albedo.write(float4(linear_to_srgb(rgb), alpha), pixel);
+```
+
+Prefer taking material factors from your material struct over reading them back
+out of the G-buffer — fewer reads, and fewer textures that need a writable view
+at all.
+
 **The cost to weigh:** that target is written then read every frame, which a
 single-pass forward renderer never paid. At high resolution it is a real share
 of the frame. A **tile shader** avoids it entirely — a kernel dispatched inside
@@ -559,13 +581,41 @@ The neutral fallbacks are not equally neutral.
 Test `layout.<semantic> >= 0` at the point of use rather than carrying parallel
 booleans through your material struct.
 
-### UV wrapping does not survive
+### UV wrapping does not survive — you must `fract` it yourself
 
-A `.ntc` is trained over `uv` in `[0,1]` and the latent sampler clamps, so
-`address::repeat` no longer means anything. Wrapping with `fract(uv)` in the
-shader restores tiling, but the latent grid does not match across the seam the
-way a repeating texture did. Expect a visible discontinuity on heavily tiled
-surfaces.
+A `.ntc` is trained over `uv` in `[0,1]` and the latent sampler is
+`clamp_to_edge`, so `address::repeat` no longer means anything. **Any uv outside
+`[0,1]` gets pinned to the texture border**, which on a tiled surface is not a
+subtle artefact — pavement and walls come out unrecognisable while unwrapped
+geometry beside them looks perfect. That split is the signature of this bug.
+
+You have to wrap it yourself:
+
+```metal
+uv = fract(uv);
+```
+
+**Order matters.** The LOD needs the *unwrapped* derivatives; the decode needs
+the *wrapped* uv. Fract before `select_lod` and you corrupt the LOD at every tile
+seam:
+
+```metal
+uint lod = select_lod(uvdx, uvdy, consts);   // unwrapped
+... decode(fract(uv), lod, ...)              // wrapped
+```
+
+Where it goes differs by path:
+
+| path | where |
+|---|---|
+| fragment | at the decode call, after the LOD is taken |
+| tensor ops | in the G-buffer fragment shader, on the uv you write out — the compute pass has no derivatives, so the LOD is already resolved by then |
+
+Two things to know beyond getting it working. The latent grid does not match
+across the seam the way a repeating texture did, so expect a visible
+discontinuity on heavily tiled surfaces. And **the usual demo assets cannot catch
+this** — a model whose UVs are already in `[0,1]` looks correct either way. Test
+any uv change on something tiled.
 
 ### Bring-up tooling worth writing first
 
