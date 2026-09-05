@@ -368,6 +368,33 @@ inline void ntc_build_features(float2                   uv,
     }
 }
 
+// overload for a StepConstants that lives in device memory, which is where a
+// bindless material slot keeps it
+inline void ntc_build_features(float2                       uv,
+                               uint                         lod,
+                               texture2d_array<float>       latents,
+                               sampler                      latentSampler,
+                               float                        gridScale,
+                               float                        gridBias,
+                               device const StepConstants&  consts,
+                               thread half*                 features) {
+    uint neural_mip = consts.neuralMipForLod[lod];
+    uint g0_size    = consts.pyramidSizes[neural_mip];
+    uint g1_size    = consts.pyramidSizes[neural_mip + 1];
+
+    sample_latent_grid(latents, latentSampler, uv, neural_mip,     g0_size,
+                       gridScale, gridBias, features);
+    sample_latent_grid(latents, latentSampler, uv, neural_mip + 1, g1_size,
+                       gridScale, gridBias, features + F_PER_GRID);
+
+    float2 posf = uv * consts.posScale;
+    pe_encode(posf, features + F_TOTAL);
+    features[F_TOTAL + PE_DIM] = half(float(lod) / float(MAX_LODS - 1));
+    for (uint i = F_IN_RAW; i < F_IN; i++) {
+        features[i] = 0.0h;   // zero padded lanes
+    }
+}
+
 inline void ntc_decode_quant(float2                   uv,
                              uint                     lod,
                              texture2d_array<float>   latents,
