@@ -12,19 +12,41 @@ reconstruct a `Material` (albedo, normal, roughness, metalness, occlusion,
 emissive). The trainer (`NTCTrainer`) produces the `.ntc`; your renderer
 consumes it. You do **not** need any of the training code at runtime.
 
+There are two decode paths, and they need different renderer architectures:
+
+| | where it runs | needs |
+|---|---|---|
+| **fragment** (`mlp_forward_h`) | inside your G-buffer / forward fragment shader | Metal 3, any Apple GPU |
+| **tensor ops** (`mlp_forward_tensor_ops`) | a compute pass between the G-buffer and lighting | `-std=metal4.0`, M5-class GPU |
+
+Start with the fragment path — it drops into an existing renderer with no
+structural change. Move to tensor ops when you want the speed, and read
+[Tensor ops path](#tensor-ops-path-m5-the-compute-pass-in-the-middle) first,
+because it dictates where the decode lives.
+
 ## Reusable pieces (include or copy)
 
 | File | Role | Portable to |
 |---|---|---|
 | `sources/NTCShared/include/ntc_constants.h` | Architecture constants (`K_HIDDEN`, `F_PER_GRID`, `F_IN`, …). | C, C++, MSL |
 | `sources/NTCShared/include/ntc_file_format.h` | `.ntc` binary layout as C structs (`NTCHeader`, `NTCSlot`). Parse with these. | C, C++ |
-| `sources/NTCCore/shaders/common.h` | The MSL decode: `sample_latent_grid`, `mlp_forward_h`, `ntc_decode_quant`, `StepConstants`. `#include` it in your fragment shader. | MSL |
+| `sources/NTCCore/shaders/common.h` | The MSL decode. Fragment path: `sample_latent_grid`, `mlp_forward_h`, `ntc_decode_quant`. Tensor path: `ntc_build_features` (per pixel) + `mlp_forward_tensor_ops` (batched), behind `NTC_TENSOR_OPS`. Plus `StepConstants`. | MSL |
 
 Reference consumer (the parts to mirror in your engine):
-- **Shader:** `sources/NTCRenderer/shaders/mesh.metal` — `sample_material`, the
-  fragment bindings, `select_lod` (LOD + stochastic filtering).
+- **Shader, fragment path:** `sources/NTCRenderer/shaders/mesh.metal` —
+  `sample_material`, the fragment bindings, `select_lod` (LOD + stochastic
+  filtering).
+- **Shader, tensor path:** same file — `gbuffer_fs` (writes the decode inputs)
+  and `ntc_decode_shade` (the compute pass). `benchmark_decode` is a
+  full-screen twin of `benchmark_fs` for A/B timing.
 - **Host loader:** `sources/NTCRenderer/renderer.swift` — `buildNTCBuffers`,
-  `buildLatentTexture`, `buildStepConstantsBuffer`, `MaterialLayout(slots:)`.
+  `buildLatentTexture`, `buildStepConstantsBuffer`, `MaterialLayout(slots:)`,
+  and `makeSlotBuffer` for the bindless slots.
+
+Both paths are behind one switch, `NTC_TENSOR_OPS` in `common.h`. With it off the
+tensor entry points do not exist, so the host can select the fallback by checking
+whether `makeFunction` returned nil — one source of truth, nothing to keep in
+sync.
 
 ## Host side: parse `.ntc` → 5 GPU resources
 
@@ -110,7 +132,7 @@ The decode reads only `pyramidSizes`, `neuralMipForLod`, `offsetW1`…`offsetB3`
 `kOut`, `posScale`, `srcW`, `srcH`, `mipCount`. Re-baseline the MLP offsets to 0,
 since they are absolute within the trainer's own buffer.
 
-## Shader side
+## Shader side (fragment path)
 
 `#include "common.h"`, then per fragment:
 
@@ -164,13 +186,148 @@ Per material, the NTC resources are: latent texture + mlp buffer + consts buffer
 MaterialLayout (tiny, inline them in your material struct). This is a natural fit
 for a `materialIndex → NTC resource` argument buffer.
 
+For the fragment fallback this is a convenience. For the tensor ops path it is a
+**requirement** — see below.
+
 ## Metal 3 vs Metal 4
 
-The runtime decode is **plain MSL and runs on Metal 3** — texture sampling, fp16
-math, a buffer read. Nothing in the decode path needs Metal 4. Only the *trainer*
-uses the Metal 4 command/queue API. So a Metal 3 engine can consume `.ntc` today;
-the MSL tensor path (`matmul2d`, Metal 4 on M5-class hardware) would only swap
-the MLP leaf later.
+The **fallback decode** is plain MSL and runs on Metal 3 — texture sampling, fp16
+math, a buffer read. Nothing in it needs Metal 4.
+
+The **tensor ops decode** needs `-std=metal4.0` for the shading language and
+M5-class hardware for the matrix unit, but it does *not* need the Metal 4 host
+API: the reference renderer drives it with `MTLCommandQueue` /
+`MTLComputeCommandEncoder` and gets the full speedup. Only the shading-language
+version matters.
+
+## Tensor ops path (M5+): the compute pass in the middle
+
+On M5-class hardware the MLP can run on the matrix unit instead of the ALU. It
+is substantially faster, and close enough to what the hardware will do with a
+well-fed GEMM that the MLP stops being the thing worth optimising.
+
+The cost is structural: it cannot live in a fragment shader, so it changes where
+the decode sits in your frame. That is what this section is about.
+
+### The one thing that decides your architecture
+
+**`execution_thread` does not reach the matrix unit.** At `m = 1` there is no
+matrix to feed and `matmul2d` degrades to a per-lane loop — slower than the
+hand-written `half4` GEMV it would replace. The speedup only exists when you
+batch pixels into a real matrix with `execution_simdgroups<4>`.
+
+And every scope except `execution_thread` accepts operands in **device or
+threadgroup memory only** (`dv_`/`tg_` in the impl symbol names; no `th_`
+variant). A fragment shader has no threadgroup address space. Apple states it
+outright in `MPPTensorOpsMatMul2d.h`:
+
+> *"Fragment shaders only support this execution scope"* — on `execution_thread`.
+
+So the decode **cannot** stay in your G-buffer fragment shader. It has to become
+a compute pass. That is not a performance trade-off, it is an address-space
+constraint.
+
+### Where it goes
+
+```
+geometry / G-buffer pass  →  NTC decode (compute)  →  your lighting / IBL pass
+```
+
+Your G-buffer fragment shader stops decoding. For neural pixels it writes the
+*decode inputs* instead, and leaves the material factors in the usual targets.
+The compute pass decodes `TILE_SIZE` (64) pixels per matmul and patches the
+G-buffer in place, so everything downstream sees an ordinary G-buffer and needs
+no changes.
+
+Dispatch it as an 8×8 pixel tile per threadgroup with **128 threads**
+(`execution_simdgroups<4>`, four simdgroups). Note 128 threads for 64 pixels:
+threads past `TILE_SIZE` own no pixel but must still reach every matmul, because
+the cooperative tensor is distributed across all their registers.
+
+**What the G-buffer must carry for a neural pixel:**
+
+| value | why it cannot be recomputed in compute |
+|---|---|
+| `uv` | interpolated; needs full float (fp16 bands visibly at 2048 texels) |
+| `lod` | `select_lod` needs `dfdx/dfdy`, which compute does not have |
+| `materialIndex` | to reach the right weights, factors and channel layout |
+| world tangent + sign | to rebuild the TBN for the decoded normal |
+
+That is more than fits in a spare channel. **Metal allows 8 colour attachments**
+— if your G-buffer already uses 7, you get exactly one more. One `RGBA32Float`
+is enough if you pack:
+
+```
+.xy  uv
+.z   materialIndex | lod<<20 | tangentSign<<24   (all-ones = not neural)
+.w   world tangent, octahedral 16:16
+```
+
+Clear `.z` to the "not neural" sentinel so background and non-neural pixels fall
+out of the same test.
+
+**The cost to weigh:** that target is written then read every frame, which a
+single-pass forward renderer never paid. At high resolution it is a real share
+of the frame. A **tile shader** avoids it entirely — a kernel dispatched inside
+the render pass has threadgroup memory *and* imageblock access, so the inputs
+never leave tile memory. That is the better shape on Apple silicon and the one
+lossless win still on the table; the compute pass is the simpler first step.
+
+### Bindless is not optional here
+
+A threadgroup shares one matmul, so it can only decode one material at a time.
+The obvious response — dispatch once per material — **does not scale**:
+
+> A draw call is bounded by its geometry. A dispatch is not; it covers exactly
+> the grid you ask for.
+
+Dispatching per material over the screen costs a full-screen scan *each*. With a
+handful of materials that is invisible; with a real scene's worth it dominates
+the frame, and almost every threadgroup launched does nothing but read the
+G-buffer and early-out. The decode itself is entirely innocent, which makes it a
+miserable thing to profile.
+
+**Dispatch once, and let each threadgroup loop over only the materials its own
+tile uses** — one or two in practice:
+
+```metal
+while (true) {
+    if (tid == 0) atomic_store_explicit(&nextMaterial, NO_MATERIAL, ...);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (pending) atomic_fetch_min_explicit(&nextMaterial, myMaterial, ...);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // uniform across the threadgroup, which it MUST be
+    uint materialIndex = atomic_load_explicit(&nextMaterial, ...);
+    if (materialIndex == NO_MATERIAL) break;
+
+    device const NTCMaterialSlot& slot = slots[materialIndex];
+    ... build features, matmul, write the pixels that match, retire them ...
+}
+```
+
+Each pass retires at least one material, so it terminates. Cost follows screen
+coverage instead of material count, and scales to any number of materials.
+
+This requires every material's resources to be reachable without rebinding — a
+buffer of slots holding `MTLResourceID` / `gpuAddress` per material:
+
+```metal
+struct NTCMaterialSlot {
+    texture2d_array<float>      latents;
+    device const half*          mlp;
+    device const StepConstants* consts;
+    MaterialLayout              layout;
+    float2                      gridDequant;
+};
+```
+
+Fill it host-side from `texture.gpuResourceID` and `buffer.gpuAddress`, and
+`useResource` each underlying resource on the encoder — the slot buffer reaches
+them by address, so residency is not inferred.
+
+The fallback path does **not** need this. It binds per draw call, and the
+rasteriser bounds each draw to its own triangles.
 
 ## Gotchas
 
