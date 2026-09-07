@@ -279,9 +279,9 @@ inline void mlp_forward_tensor_ops(device const half*  mlp,
                                    threadgroup half* hidden,
                                    threadgroup half* pred) {
     
-    constexpr auto descriptor1 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_HIDDEN,  F_IN, false, true, false);
-    constexpr auto descriptor2 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_HIDDEN,  K_HIDDEN, false, true, false);
-    constexpr auto descriptor3 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_OUT_MAX, K_HIDDEN, false, true, false);
+    constexpr auto descriptor1 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_HIDDEN,  F_IN, false, true, true);
+    constexpr auto descriptor2 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_HIDDEN,  K_HIDDEN, false, true, true);
+    constexpr auto descriptor3 = mpp::tensor_ops::matmul2d_descriptor(TILE_SIZE, K_OUT_MAX, K_HIDDEN, false, true, true);
     
     // Layer 1
     {
