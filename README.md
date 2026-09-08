@@ -1,7 +1,7 @@
 # MetalNTC
 
 Metal 4 implementation of Neural Texture Compression (NTC): compress a set of
-material textures into feature grids + a small MLP, decode per pixel at render
+material textures into feature grids + a small MLP and decode per pixel at render
 time.
 
 - **Trainer** will produce a `.ntc` file for each mesh in the `.gltf`.
@@ -29,12 +29,12 @@ Requires macOS 26 + Xcode 26 (Metal 4) on Apple silicon.
 
 Product -> Scheme -> Edit Scheme...-> **Run** -> **Info** -> Build Configuration.
 
-Prefer **Release** for anything real.
+Prefer **Release**.
 
 ## Run
 
 - **NTCTrainer** opens a file picker to choose a `.gltf`,
-  `manifest.json`, or texture folder. It writes `<material>_<quality>.ntc` beside
+  `manifest.json`, or texture folder. Then opens the quality setting selection. It writes `<material>_<quality>.ntc` beside
   the input. (Set `INPUT_OVERRIDE` in `sources/NTCTrainer/main.swift` to skip
   the picker.)
 - **NTCRenderer** opens a window and renders the demo model from its `.ntc`.
@@ -42,3 +42,8 @@ Prefer **Release** for anything real.
 ## Integrate into your engine
 
 See [LLM.md](LLM.md).
+
+
+## License
+
+**[MIT License](https://github.com/Qirias/MetalNTC/blob/main/LICENSE)**, free to use with attribution.
