@@ -310,7 +310,7 @@ G-buffer and early-out. The decode itself is entirely innocent, which makes it a
 miserable thing to profile.
 
 **Dispatch once, and let each threadgroup loop over only the materials its own
-tile uses** — one or two in practice:
+tile uses:**
 
 ```metal
 while (true) {
@@ -328,8 +328,27 @@ while (true) {
 }
 ```
 
-Each pass retires at least one material, so it terminates. Cost follows screen
-coverage instead of material count, and scales to any number of materials.
+Each pass retires at least one material, so it terminates. A tile pays one
+matmul per **distinct** material among its 64 pixels — never the scene's
+material count.
+
+**How many that is, is a property of the scene, not of the technique.** A hero
+object with a handful of materials leaves nearly every tile single-material;
+only the ones straddling a silhouette go round twice. Densely dressed geometry —
+Bistro-class, small triangles, many materials interleaved — puts four or more
+inside one 8×8 tile routinely, and each of those is a *full* matmul: every lane
+has to reach it whether or not its own pixel belongs to that material, so a
+4-material tile decodes 64 rows four times to shade 64 pixels.
+
+You cannot shrink the tile to dodge it. `execution_simdgroups<4>` spreads the
+cooperative tensor across 128 lanes, so 64 rows is the shape the matmul wants;
+a smaller tile straddles fewer materials but wastes most of the matmul it just
+paid for.
+
+The bound holds either way — worst case `min(materials in tile, 64)` matmuls for
+those 64 pixels, against one full-screen scan *per material* for the naive
+dispatch — but budget the decode against the on-screen material density of your
+own scene, not against a hero-object number.
 
 This requires every material's resources to be reachable without rebinding — a
 buffer of slots holding `MTLResourceID` / `gpuAddress` per material:
