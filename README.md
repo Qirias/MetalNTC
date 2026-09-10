@@ -44,6 +44,22 @@ Prefer **Release**.
 See [LLM.md](LLM.md).
 
 
+## Reference
+
+An independent implementation of the method described in:
+
+> Karthik Vaidyanathan, Marco Salvi, Bartlomiej Wronski, Tomas Akenine-Möller,
+> Pontus Ebelin, Aaron Lefohn. **Random-Access Neural Compression of Material
+> Textures.** ACM Transactions on Graphics 42(4), SIGGRAPH 2023.
+
+Not affiliated with or endorsed by NVIDIA Corporation.
+
 ## License
 
-**[MIT License](https://github.com/Qirias/MetalNTC/blob/main/LICENSE)**, free to use with attribution.
+**[PolyForm Noncommercial License 1.0.0](LICENSE.md)** — noncommercial use only.
+Released for research and education: study, research, teaching, and personal or
+hobby projects are permitted; use in or for a commercial product or service is
+not. Open an issue if you need commercial terms.
+
+`sources/NTCRenderer/AAPLMath/` is Apple sample code under its own terms, and the
+demo assets carry their own `license.txt`.
