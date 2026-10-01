@@ -77,6 +77,11 @@ inline float hard_gelu_prime(float x) {
 }
 
 inline void atomic_add_fixed(device atomic_int* slot, float val) {
+    // drop inf so one bad sample can't wrap the slot for the whole batch
+    if (!isfinite(val)) {
+        return;
+    }
+
     // 2^30 leaves 2x headroom below INT32_MAX per single write
     float scaled = clamp(val * float(SCALE), -1073741824.0f, 1073741824.0f);
     atomic_fetch_add_explicit(slot, int(rint(scaled)), memory_order_relaxed);
