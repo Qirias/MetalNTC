@@ -58,7 +58,7 @@ kernel void grid_mlp_train(device               float*                          
     uint g1_size    = consts.pyramidSizes[neural_mip + 1];
 
     // Grid 0
-    float ix0 = float(x) * float(g0_size - 1) / float(srcWL - 1);;
+    float ix0 = float(x) * float(g0_size - 1) / float(srcWL - 1);
     float iy0 = float(y) * float(g0_size - 1) / float(srcHL - 1);
     int ix0_0 = max(min(int(floor(ix0)), int(g0_size) - 2), 0);
     int iy0_0 = max(min(int(floor(iy0)), int(g0_size) - 2), 0);
@@ -66,7 +66,7 @@ kernel void grid_mlp_train(device               float*                          
     float fy0 = iy0 - float(iy0_0);
 
     // Grid 1
-    float ix1 = float(x) * float(g1_size - 1) / float(srcWL - 1);;
+    float ix1 = float(x) * float(g1_size - 1) / float(srcWL - 1);
     float iy1 = float(y) * float(g1_size - 1) / float(srcHL - 1);
     int ix0_1 = max(min(int(floor(ix1)), int(g1_size) - 2), 0);
     int iy0_1 = max(min(int(floor(iy1)), int(g1_size) - 2), 0);

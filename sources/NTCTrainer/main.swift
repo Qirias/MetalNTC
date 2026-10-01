@@ -479,6 +479,13 @@ print("== \(dir.lastPathComponent): \(manifest.models.count) model(s) ==")
 
 var failures: [String] = []
 for (i, model) in manifest.models.enumerated() {
+    // already trained at this quality: keep it; delete the file to retrain
+    let existingURL = dir.appendingPathComponent(QUALITY.ntcFileName(base: model.name))
+    if FileManager.default.fileExists(atPath: existingURL.path) {
+        print("-- [\(i + 1)/\(manifest.models.count)] exists \(existingURL.lastPathComponent), skipping --")
+        continue
+    }
+
     print("-- [\(i + 1)/\(manifest.models.count)] training \(model.name) (\(model.textures.count) textures) --")
     // one model failing must not cost the models already written or the ones
     // still to run; so the batch keeps going and reports what it skipped
